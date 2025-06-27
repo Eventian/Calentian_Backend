@@ -1,0 +1,20 @@
+services:
+  notes-service:
+    build: .
+    container_name: notes-service
+    restart: always
+    env_file:
+      - .env
+      - ../calentian.env
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.notes-service.rule=Host(`api.calentian.de`) && PathPrefix(`/notes-service`)"
+      - "traefik.http.routers.notes-service.entrypoints=websecure"
+      - "traefik.http.routers.notes-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.notes-service.loadbalancer.server.port=6100"
+
+networks:
+  proxy:
+    external: true

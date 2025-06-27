@@ -1,0 +1,35 @@
+http:
+  middlewares:
+    auth:
+      basicAuth:
+        users:
+          - "calentian_admin:$apr1$.jKdQJFa$TYbH98uHnKU659bFK/i6T0"
+    secure-headers:
+      headers:
+        frameDeny: true
+        sslRedirect: true
+        browserXssFilter: true
+        contentTypeNosniff: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+    corsHeaders:
+      headers:
+        # Erlaubte Ursprünge
+        accessControlAllowOriginList:
+          - "http://localhost:4200"
+          - "https://dashboard.calentian.de"
+        # Erlaubte HTTP-Methoden
+        accessControlAllowMethods:
+          - "GET"
+          - "POST"
+          - "PUT"
+          - "DELETE"
+          - "OPTIONS"
+        # Erlaubte Header
+        accessControlAllowHeaders:
+          - "Content-Type"
+          - "Authorization"
+        # Falls Du Cookies o.ä. sendest
+        accessControlAllowCredentials: true

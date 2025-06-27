@@ -1,0 +1,23 @@
+{
+    "name": "forms-service",
+    "version": "1.0.0",
+    "description": "Form embedding and submission service",
+    "main": "forms-service.js",
+    "scripts": {
+        "start": "node forms-service.js"
+    },
+    "dependencies": {
+        "axios": "^1.4.0",
+        "cookie-parser": "^1.4.7",
+        "cookieparser": "^0.1.0",
+        "cors": "^2.8.5",
+        "dotenv": "^16.3.1",
+        "express": "^4.18.2",
+        "express-rate-limit": "^7.5.0",
+        "jsonwebtoken": "^9.0.2",
+        "mysql2": "^3.5.2"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}

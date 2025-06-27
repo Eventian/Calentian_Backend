@@ -1,0 +1,14 @@
+{
+  "name": "socket-io",
+  "version": "1.0.0",
+  "main": "socket-io.js",
+  "type": "module", 
+  "scripts": {
+    "start": "node socket-io.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.3.2",
+    "mysql2": "^2.3.3",
+    "dotenv": "^10.0.0"
+  }
+}

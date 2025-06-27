@@ -1,0 +1,20 @@
+services:
+  smtp-service:
+    container_name: smtp-service
+    build: .
+    env_file:
+      - .env
+      - ../calentian.env
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.smtp-service.rule=Host(`api.calentian.de`) && PathPrefix(`/smtp-service`)"
+      - "traefik.http.routers.smtp-service.entrypoints=websecure"
+      - "traefik.http.routers.smtp-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.smtp-service.loadbalancer.server.port=5000"
+    restart: always
+
+networks:
+  proxy:
+    external: true

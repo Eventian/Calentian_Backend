@@ -1,0 +1,20 @@
+services:
+  database-service:
+    build: .
+    container_name: database-service
+    networks:
+      - proxy  # Traefik Netzwerk
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.database-service.rule=Host(`api.calentian.de`) && PathPrefix(`/database`)"
+      - "traefik.http.routers.database-service.entrypoints=websecure"
+      - "traefik.http.routers.database-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.database-service.loadbalancer.server.port=4100"  # Intern genutzter Port
+    env_file:
+      - .env  # Umgebungsvariablen aus der .env-Datei
+      - ../calentian.env  # Zusätzliche Umgebungsvariablen
+    restart: always
+
+networks:
+  proxy:
+    external: true

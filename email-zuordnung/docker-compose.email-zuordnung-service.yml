@@ -1,0 +1,20 @@
+services:
+  email-zuordnung:
+    build: .
+    container_name: email-zuordnung-service
+    restart: always
+    env_file:
+      - .env
+      - ../calentian.env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.email-zuordnung.rule=Host(`api.calentian.de`) && PathPrefix(`/email-zuordnung`)"
+      - "traefik.http.routers.email-zuordnung.entrypoints=websecure"
+      - "traefik.http.routers.email-zuordnung.tls.certresolver=letsencrypt"
+      - "traefik.http.services.email-zuordnung.loadbalancer.server.port=5200"
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true

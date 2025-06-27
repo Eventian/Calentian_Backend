@@ -1,0 +1,21 @@
+services:
+  mail-service:
+    container_name: mail-service
+    build: .
+    restart: unless-stopped
+    env_file:
+      - ../calentian.env
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.mail-service.rule=Host(`api.calentian.de`) && PathPrefix(`/mail-service`)"
+      - "traefik.http.routers.mail-service.entrypoints=websecure"
+      - "traefik.http.routers.mail-service.tls=true"
+      - "traefik.http.routers.mail-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.mail-service.loadbalancer.server.port=5300"
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true

@@ -1,0 +1,20 @@
+services:
+  forms-service:
+    build: .
+    container_name: forms-service
+    restart: always
+    env_file:
+      - .env
+      - ../calentian.env
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.forms-service.rule=Host(`api.calentian.de`) && PathPrefix(`/forms-service`)"
+      - "traefik.http.routers.forms-service.entrypoints=websecure"
+      - "traefik.http.routers.forms-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.forms-service.loadbalancer.server.port=6200"
+
+networks:
+  proxy:
+    external: true

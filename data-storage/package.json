@@ -1,0 +1,18 @@
+{
+  "name": "data-storage",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "data-storage-service.js",
+  "scripts": {
+    "start": "node data-storage-service.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.0",
+    "multer": "^1.4.5-lts.1",
+    "webdav": "^5.8.0"
+  }
+}

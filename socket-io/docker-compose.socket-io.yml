@@ -1,0 +1,23 @@
+services:
+  socket-io:
+    build: .
+    container_name: socket-io
+    restart: unless-stopped
+    env_file:
+      - ../calentian.env
+    labels:
+      # Traefik Konfiguration
+      - "traefik.enable=true"
+      - "traefik.http.routers.socket-io.rule=Host(`socket.calentian.de`)"
+      - "traefik.http.routers.socket-io.entrypoints=websecure"
+      - "traefik.http.routers.socket-io.tls=true"
+      - "traefik.http.routers.socket-io.tls.certresolver=letsencrypt"
+      - "traefik.http.services.socket-io.loadbalancer.server.port=5201"
+    volumes:
+      - /home/calentian_admin/calentian-stack/traefik/acme.json:/etc/traefik/acme.json  # Traefik Zertifikate einbinden
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true

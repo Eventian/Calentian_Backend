@@ -1,0 +1,20 @@
+services:
+  login-service:
+    build: .
+    container_name: login-service
+    restart: unless-stopped
+    env_file:
+      - .env
+      - ../calentian.env
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.login-service.rule=Host(`api.calentian.de`) && PathPrefix(`/login-service`)"
+      - "traefik.http.routers.login-service.entrypoints=websecure"
+      - "traefik.http.routers.login-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.login-service.loadbalancer.server.port=3000"
+
+networks:
+  proxy:
+    external: true

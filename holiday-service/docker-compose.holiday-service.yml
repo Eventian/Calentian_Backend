@@ -1,0 +1,19 @@
+services:
+  holiday-server:
+    build: .
+    container_name: holiday-service
+    restart: always
+    env_file:
+      - .env
+      - ../calentian.env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.holiday-service.rule=Host(`api.calentian.de`) && PathPrefix(`/holiday-service`)"
+      - "traefik.http.routers.holiday-service.entrypoints=websecure"
+      - "traefik.http.routers.holiday-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.holiday-service.loadbalancer.server.port=6600"
+    networks:
+      - proxy
+networks:
+  proxy:
+    external: true
