@@ -1,0 +1,19 @@
+services:
+  database-angebotsgenerator-service:
+    build: .
+    container_name: database-angebotsgenerator
+    networks:
+      - proxy # Traefik Netzwerk
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.database-angebotsgenerator-service.rule=Host(`api.calentian.de`) && PathPrefix(`/database-angebotsgenerator`)"
+      - "traefik.http.routers.database-angebotsgenerator-service.entrypoints=websecure"
+      - "traefik.http.routers.database-angebotsgenerator-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.database-angebotsgenerator-service.loadbalancer.server.port=4150" # Intern genutzter Port
+    env_file:
+      - ../calentian.env # Zusätzliche Umgebungsvariablen
+    restart: always
+
+networks:
+  proxy:
+    external: true

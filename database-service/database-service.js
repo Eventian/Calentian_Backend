@@ -115,6 +115,7 @@ const allowedTables = [
   "calentian_kunden_emails",
   "calentian_holidays",
   "calentian_calendar_settings",
+  "calentian_offer",
 ];
 
 const tableFilters = {
@@ -248,6 +249,7 @@ app.get("/database/events", authenticateToken, async (req, res) => {
       s.label AS event_status_label, 
       s.css_class AS event_status_css,
       va.name AS veranstaltungsart_label,
+      va.icon_class AS veranstaltungsart_icon,
       e.anzahl_personen_gesamt, 
       e.event_name
     FROM calentian_event_entries e
