@@ -28,24 +28,20 @@ const pool = mysql.createPool({
 app.get("/database-angebotsgenerator/:hash", async (req, res) => {
   const hash = req.params.hash?.trim();
 
-  console.log("📥 Anfrage empfangen:");
-  console.log("👉 Hash:", hash);
-  console.log("👉 URL:", req.originalUrl);
-  console.log("👉 Params:", req.params);
-  console.log("👉 Query:", req.query);
-
   if (!/^([a-zA-Z0-9]{5}-){5}[a-zA-Z0-9]{5}$/.test(hash)) {
     return res.status(400).json({ error: "Ungültiger Hash" });
   }
 
   try {
-    // 🔹 1. Angebot + Event + Kundendaten laden
+    // 🔹 1. Angebot + Event + Kunde laden
     const [offerRows] = await pool.query(
       `
       SELECT 
         o.*, 
+        e.id AS event_id,
+        e.calentian_entries_id,
         e.event_name, 
-         e.datum AS event_date,
+        e.datum AS event_date,
         k.vorname AS customer_firstname,
         k.nachname AS customer_lastname,
         k.firma AS customer_company
@@ -64,64 +60,128 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
 
     const offer = offerRows[0];
 
-    // 🔹 2. Positionen laden
+    // 🔹 2. Kategorien
+    const [categories] = await pool.query(
+      `SELECT name, sort_order FROM calentian_offer_product_category`
+    );
+    const CATEGORY_ORDER = {};
+    for (const cat of categories) {
+      CATEGORY_ORDER[cat.name] = cat.sort_order ?? 999;
+    }
+
+    // 🔹 3. Gruppen
+    const [groupRows] = await pool.query(
+      `SELECT id, title, type, sort_order FROM calentian_offer_item_group WHERE offer_id = ?`,
+      [offer.id]
+    );
+    const groupMap = Object.fromEntries(groupRows.map((g) => [g.id, g]));
+
+    // 🔹 4. Items laden + Units direkt aus price_unit
     const [itemRows] = await pool.query(
       `
       SELECT
         i.id AS item_id,
         i.title AS item_title,
+        i.teaser AS item_teaser,
         i.description AS item_description,
         i.unit_price,
         i.quantity,
-        i.unit,
         i.optional,
         i.selected_by_default,
         i.can_edit_quantity,
         i.can_remove,
         i.min_quantity,
         i.max_quantity,
-        i.group_id,
-        i.group_type,
-        i.group_title,
-        i.referenced_item_id,
-        p.title AS product_title,
-        p.description AS product_description,
+        i.category_id,
+        i.calentian_offer_item_group_id AS group_id,
+        i.calentian_offer_price_unit_id AS unit_id,
+        u.title AS unit_title,
+        u.description AS unit_description,
+        u.calculation_type,
+        u.calculation_config,
         c.name AS category
       FROM calentian_offer_item i
-      LEFT JOIN calentian_offer_product p ON i.product_id = p.id
-      LEFT JOIN calentian_offer_product_category c ON p.category_id = c.id
+      LEFT JOIN calentian_offer_price_unit u ON i.calentian_offer_price_unit_id = u.id
+      LEFT JOIN calentian_offer_product_category c ON i.category_id = c.id
       WHERE i.offer_id = ?
-      ORDER BY i.group_id, i.id
       `,
       [offer.id]
     );
 
-    const items = itemRows.map((row) => ({
-      id: row.item_id,
-      title: row.item_title,
-      description: row.item_description,
-      unit_price: parseFloat(row.unit_price),
-      quantity: row.quantity,
-      unit: row.unit,
-      optional: !!row.optional,
-      can_edit_quantity: !!row.can_edit_quantity,
-      can_remove: !!row.can_remove,
-      min_quantity: row.min_quantity,
-      max_quantity: row.max_quantity,
-      group_id: row.group_id,
-      group_type: row.group_type,
-      group_title: row.group_title,
-      referenced_item_id: row.referenced_item_id,
-      product: {
-        title: row.product_title,
-        description: row.product_description,
-        category: row.category,
-      },
-      selected: !row.optional || !!row.selected_by_default,
-      selected_by_default: !!row.selected_by_default,
+    const items = itemRows.map((row) => {
+      const group = groupMap[row.group_id] || null;
+
+      return {
+        id: row.item_id,
+        title: row.item_title,
+        teaser: row.item_teaser,
+        description: row.item_description,
+        unit_price: parseFloat(row.unit_price),
+        quantity: row.quantity,
+        unit: {
+          id: row.unit_id,
+          title: row.unit_title,
+          description: row.unit_description,
+          calculation_type: row.calculation_type,
+          calculation_config: JSON.parse(row.calculation_config || "{}"),
+        },
+        optional: !!row.optional,
+        can_edit_quantity: !!row.can_edit_quantity,
+        can_remove: !!row.can_remove,
+        min_quantity: row.min_quantity,
+        max_quantity: row.max_quantity,
+        group_id: row.group_id,
+        group_type: group?.type ?? null,
+        group_title: group?.title ?? null,
+        product: {
+          category: row.category,
+        },
+        selected: !row.optional || !!row.selected_by_default,
+        selected_by_default: !!row.selected_by_default,
+      };
+    });
+
+    // 🔹 5. Gästegruppen
+    const [guestGroupRows] = await pool.query(
+      `
+      SELECT 
+        g.id AS group_id,
+        g.title,
+        g.sort_order,
+        gc.guest_count
+      FROM calentian_guest_group_template g
+      LEFT JOIN calentian_event_guest_count gc 
+        ON gc.guest_group_template_id = g.id AND gc.calentian_event_entries_id = ?
+      WHERE g.calentian_entries_id = ?
+      ORDER BY g.sort_order ASC
+      `,
+      [offer.event_id, offer.calentian_entries_id]
+    );
+
+    const guest_groups = guestGroupRows.map((g) => ({
+      id: g.group_id,
+      title: g.title,
+      count: g.guest_count ?? 0,
     }));
 
-    // 🔹 3. JSON-Antwort zurückgeben
+    // 🔹 6. Sortierung
+    items.sort((a, b) => {
+      const catA = CATEGORY_ORDER[a.product.category] ?? 999;
+      const catB = CATEGORY_ORDER[b.product.category] ?? 999;
+      if (catA !== catB) return catA - catB;
+
+      const sortA = groupMap[a.group_id]?.sort_order ?? 999;
+      const sortB = groupMap[b.group_id]?.sort_order ?? 999;
+      if (sortA !== sortB) return sortA - sortB;
+
+      const gA = a.group_id ?? 0;
+      const gB = b.group_id ?? 0;
+      if (gA !== gB) return gA - gB;
+
+      return a.id - b.id;
+    });
+
+    // 🔹 7. Antwort senden
     res.json({
       id: offer.id,
       status: offer.status,
@@ -137,6 +197,7 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
       customer_firstname: offer.customer_firstname,
       customer_lastname: offer.customer_lastname,
       customer_company: offer.customer_company,
+      guest_groups,
       items,
     });
   } catch (err) {
