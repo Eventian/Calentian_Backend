@@ -33,7 +33,7 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
   }
 
   try {
-    // 🔹 1. Angebot + Event + Kunde laden
+    // 1. Angebot + Event + Kunde
     const [offerRows] = await pool.query(
       `
       SELECT 
@@ -60,7 +60,20 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
 
     const offer = offerRows[0];
 
-    // 🔹 2. Kategorien
+    // 1a. Schriftart aus calentian_offer_settings laden
+    const [fontRows] = await pool.query(
+      `
+      SELECT font
+      FROM calentian_offer_settings
+      WHERE calentian_entries_id = ?
+      LIMIT 1
+      `,
+      [offer.calentian_entries_id]
+    );
+
+    const font = fontRows[0]?.font || "montserrat";
+
+    // 2. Kategorien laden
     const [categories] = await pool.query(
       `SELECT name, sort_order FROM calentian_offer_product_category`
     );
@@ -69,14 +82,14 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
       CATEGORY_ORDER[cat.name] = cat.sort_order ?? 999;
     }
 
-    // 🔹 3. Gruppen
+    // 3. Gruppen laden mit optional Spalte
     const [groupRows] = await pool.query(
-      `SELECT id, title, type, sort_order FROM calentian_offer_item_group WHERE offer_id = ?`,
+      `SELECT id, title, type, sort_order, optional FROM calentian_offer_item_group WHERE offer_id = ?`,
       [offer.id]
     );
     const groupMap = Object.fromEntries(groupRows.map((g) => [g.id, g]));
 
-    // 🔹 4. Items laden + Units direkt aus price_unit
+    // 4. Items laden
     const [itemRows] = await pool.query(
       `
       SELECT
@@ -89,13 +102,14 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
         i.optional,
         i.selected_by_default,
         i.can_edit_quantity,
-        i.can_remove,
         i.min_quantity,
         i.max_quantity,
+        i.sort_order,
         i.category_id,
         i.calentian_offer_item_group_id AS group_id,
         i.calentian_offer_price_unit_id AS unit_id,
         u.title AS unit_title,
+        u.short_title AS unit_short_title,
         u.description AS unit_description,
         u.calculation_type,
         u.calculation_config,
@@ -108,10 +122,22 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
       [offer.id]
     );
 
-    const items = itemRows.map((row) => {
+    // Items gruppieren nach group_id
+    const itemsByGroupId = {};
+    for (const row of itemRows) {
       const group = groupMap[row.group_id] || null;
+      const rawConfig = JSON.parse(row.calculation_config || "{}");
 
-      return {
+      if (
+        (row.calculation_type === "per_guestgroup" ||
+          row.calculation_type === "per_hour_guestgroup") &&
+        rawConfig.guest_groups_id &&
+        !rawConfig.group_ids
+      ) {
+        rawConfig.group_ids = rawConfig.guest_groups_id;
+      }
+
+      const item = {
         id: row.item_id,
         title: row.item_title,
         teaser: row.item_teaser,
@@ -121,27 +147,41 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
         unit: {
           id: row.unit_id,
           title: row.unit_title,
+          short_title: row.unit_short_title,
           description: row.unit_description,
           calculation_type: row.calculation_type,
-          calculation_config: JSON.parse(row.calculation_config || "{}"),
+          calculation_config: rawConfig,
         },
         optional: !!row.optional,
         can_edit_quantity: !!row.can_edit_quantity,
-        can_remove: !!row.can_remove,
         min_quantity: row.min_quantity,
         max_quantity: row.max_quantity,
+        sort_order: row.sort_order ?? 0,
         group_id: row.group_id,
         group_type: group?.type ?? null,
         group_title: group?.title ?? null,
+        group_optional: !!group?.optional,
         product: {
           category: row.category,
         },
-        selected: !row.optional || !!row.selected_by_default,
-        selected_by_default: !!row.selected_by_default,
+        selected: !!row.selected_by_default, // Falls vorhanden
       };
-    });
 
-    // 🔹 5. Gästegruppen
+      if (!itemsByGroupId[item.group_id]) {
+        itemsByGroupId[item.group_id] = [];
+      }
+      itemsByGroupId[item.group_id].push(item);
+    }
+
+    // Sortiere Items innerhalb jeder Gruppe nach sort_order & id
+    for (const groupId in itemsByGroupId) {
+      itemsByGroupId[groupId].sort((a, b) => {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+        return a.id - b.id;
+      });
+    }
+
+    // 5. Gästegruppen laden
     const [guestGroupRows] = await pool.query(
       `
       SELECT 
@@ -164,24 +204,23 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
       count: g.guest_count ?? 0,
     }));
 
-    // 🔹 6. Sortierung
-    items.sort((a, b) => {
-      const catA = CATEGORY_ORDER[a.product.category] ?? 999;
-      const catB = CATEGORY_ORDER[b.product.category] ?? 999;
-      if (catA !== catB) return catA - catB;
-
-      const sortA = groupMap[a.group_id]?.sort_order ?? 999;
-      const sortB = groupMap[b.group_id]?.sort_order ?? 999;
-      if (sortA !== sortB) return sortA - sortB;
-
-      const gA = a.group_id ?? 0;
-      const gB = b.group_id ?? 0;
-      if (gA !== gB) return gA - gB;
-
+    // 6. Sortiere Gruppen nach sort_order & id
+    groupRows.sort((a, b) => {
+      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
       return a.id - b.id;
     });
 
-    // 🔹 7. Antwort senden
+    // 7. Bau die gruppierten Datenstruktur für Response
+    const groupsWithItems = groupRows.map((group) => ({
+      id: group.id,
+      title: group.title,
+      type: group.type,
+      optional: !!group.optional,
+      sort_order: group.sort_order,
+      items: itemsByGroupId[group.id] || [],
+    }));
+
+    // 8. Antwort senden mit verschachtelter Struktur
     res.json({
       id: offer.id,
       status: offer.status,
@@ -197,8 +236,9 @@ app.get("/database-angebotsgenerator/:hash", async (req, res) => {
       customer_firstname: offer.customer_firstname,
       customer_lastname: offer.customer_lastname,
       customer_company: offer.customer_company,
+      font, // Schriftart
       guest_groups,
-      items,
+      groups: groupsWithItems,
     });
   } catch (err) {
     console.error("❌ DB-Fehler:", err);

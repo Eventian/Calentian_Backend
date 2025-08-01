@@ -50,7 +50,7 @@ app.use((req, res, next) => {
       "Access-Control-Allow-Methods",
       "GET, POST, PUT, DELETE, OPTIONS"
     );
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.header("Access-Control-Allow-Headers", "Content-Type", "Authorization");
     res.header("Access-Control-Allow-Credentials", "true");
     return res.sendStatus(200);
   }
@@ -116,6 +116,10 @@ const allowedTables = [
   "calentian_holidays",
   "calentian_calendar_settings",
   "calentian_offer",
+  "calentian_event_guest_count",
+  "calentian_guest_group_template",
+  "calentian_closure_days",
+  "calentian_kunden_emails_addresses",
 ];
 
 const tableFilters = {
@@ -126,6 +130,7 @@ const tableFilters = {
   calentian_kundendaten: "calentian_entries_id = ?",
   calentian_kunden_emails: "calentian_entries_id = ?",
   calentian_calendar_settings: "calentian_entries_id = ?",
+  calentian_closure_days: "calentian_entries_id = ?",
 };
 
 // Datenbankroute für Abruf einer Tabelle
@@ -140,7 +145,7 @@ app.get("/database", authenticateToken, (req, res) => {
   const params = [];
   const whereClauses = [];
 
-  // 1. Filter nach calentian_entries_id (z. B. Location-Owner)
+  // 1. Filter nach calentian_entries_id (z. B. Location-Owner)
   if (tableFilters[table]) {
     whereClauses.push(tableFilters[table]);
     params.push(req.user.calentian_entries_id);
@@ -210,10 +215,20 @@ app.post("/database/multi-request", authenticateToken, (req, res) => {
     let query = "SELECT * FROM ??";
     const params = [table];
 
+    // Standard-Filter für bestimmte Tabellen
     let filter = tableFilters[table] || null;
     if (filter) {
       query += " WHERE " + filter;
       params.push(req.user.calentian_entries_id);
+    }
+
+    // Zusätzliche WHERE-Bedingungen aus dem Request
+    if (r.where) {
+      const whereClause = buildWhereClause(r.where);
+      if (whereClause) {
+        query += filter ? " AND " + whereClause : " WHERE " + whereClause;
+        // Parameter für WHERE-Bedingungen hinzufügen
+      }
     }
 
     db.query(query, params, (err, rows) => {
@@ -229,7 +244,49 @@ app.post("/database/multi-request", authenticateToken, (req, res) => {
   });
 });
 
-// Route zum Abrufen von mehreren Events
+// Helper-Funktion für WHERE-Bedingungen
+function buildWhereClause(where) {
+  // Implementierung für _like, _in, _eq, etc.
+}
+
+// Neuer Endpunkt für gefilterte Feiertage
+app.post("/database/holidays", authenticateToken, (req, res) => {
+  const { year, month, laender, bundeslaender } = req.body;
+
+  if (!year || !month) {
+    return res.status(400).json({ message: "Jahr und Monat erforderlich." });
+  }
+
+  let query = `
+    SELECT * FROM calentian_holidays 
+    WHERE datum LIKE ? 
+    AND land IN (?)
+  `;
+
+  const params = [`${year}-${month}-%`, laender];
+
+  // Bundesländer-Filter hinzufügen
+  if (bundeslaender && bundeslaender.length > 0) {
+    query += ` AND (bundesland IN (?) OR bundesland IS NULL)`;
+    params.push(bundeslaender);
+  }
+
+  db.query(query, params, (err, rows) => {
+    if (err) {
+      console.error("Fehler bei Feiertage-Abfrage:", err);
+      return res
+        .status(500)
+        .json({ error: "Fehler beim Abrufen der Feiertage." });
+    }
+
+    console.log(
+      `Gefilterte Feiertage: ${rows.length} Einträge für ${year}-${month}`
+    );
+    res.json({ holidays: rows });
+  });
+});
+
+// Route zum Abrufen von mehreren Events - ANGEPASST für neue Struktur
 app.get("/database/events", authenticateToken, async (req, res) => {
   const locationId = req.user.calentian_entries_id;
 
@@ -250,18 +307,31 @@ app.get("/database/events", authenticateToken, async (req, res) => {
       s.css_class AS event_status_css,
       va.name AS veranstaltungsart_label,
       va.icon_class AS veranstaltungsart_icon,
-      e.anzahl_personen_gesamt, 
-      e.event_name
+      e.event_name,
+      COALESCE(SUM(egc.guest_count), 0) AS anzahl_personen_gesamt,
+      JSON_ARRAYAGG(
+        JSON_OBJECT(
+          'guest_group_title', ggt.title,
+          'guest_count', egc.guest_count,
+          'min_age', ggt.min_age,
+          'max_age', ggt.max_age,
+          'sort_order', ggt.sort_order
+        )
+        ORDER BY ggt.sort_order ASC
+      ) AS guest_groups
     FROM calentian_event_entries e
     JOIN calentian_kundendaten k ON e.calentian_kundendaten_id = k.id
     JOIN calentian_entries_location l ON e.location_id = l.id
     LEFT JOIN calentian_event_entries_status s ON e.calentian_event_entries_status_id = s.id
     LEFT JOIN calentian_event_entries_veranstaltungsart va ON e.calentian_event_entries_veranstaltungsart_id = va.id
+    LEFT JOIN calentian_event_guest_count egc ON e.id = egc.calentian_event_entries_id
+    LEFT JOIN calentian_guest_group_template ggt ON egc.guest_group_template_id = ggt.id
     WHERE e.calentian_entries_id = ?
+    GROUP BY e.id, e.calentian_kundendaten_id, e.calentian_entries_id, e.location_id, e.datum, e.bis_datum, e.start_time, e.calentian_event_entries_veranstaltungsart_id, e.calentian_event_entries_status_id, e.event_name, k.vorname, k.nachname, k.firma, l.location_name, s.label, s.css_class, va.name, va.icon_class
   `;
 
   try {
-    const connection = await db.promise(); // Falls du mit `mysql2` arbeitest
+    const connection = await db.promise();
     const [results] = await connection.execute(query, [locationId]);
     res.json(results);
   } catch (err) {
@@ -270,7 +340,7 @@ app.get("/database/events", authenticateToken, async (req, res) => {
   }
 });
 
-// Route zum Abrufen eines einzelnen Events
+// Route zum Abrufen eines einzelnen Events - ANGEPASST für neue Struktur
 app.get("/database/event/:id", authenticateToken, async (req, res) => {
   const eventId = req.params.id;
 
@@ -286,14 +356,28 @@ app.get("/database/event/:id", authenticateToken, async (req, res) => {
       va.name AS veranstaltungsart_label,
       ce.calentian_entries_name,
       ce.calentian_entries_zusatz,
-      ce.calentian_entries_zusatz_davor
+      ce.calentian_entries_zusatz_davor,
+      COALESCE(SUM(egc.guest_count), 0) AS anzahl_personen_gesamt,
+      JSON_ARRAYAGG(
+        JSON_OBJECT(
+          'guest_group_title', ggt.title,
+          'guest_count', egc.guest_count,
+          'min_age', ggt.min_age,
+          'max_age', ggt.max_age,
+          'sort_order', ggt.sort_order
+        )
+          ORDER BY ggt.sort_order ASC
+      ) AS guest_groups
     FROM calentian_event_entries e
     JOIN calentian_kundendaten k ON e.calentian_kundendaten_id = k.id
     JOIN calentian_entries_location l ON e.location_id = l.id
     LEFT JOIN calentian_event_entries_status s ON e.calentian_event_entries_status_id = s.id
     LEFT JOIN calentian_event_entries_veranstaltungsart va ON e.calentian_event_entries_veranstaltungsart_id = va.id
     JOIN calentian_entries ce ON e.calentian_entries_id = ce.id
+    LEFT JOIN calentian_event_guest_count egc ON e.id = egc.calentian_event_entries_id
+    LEFT JOIN calentian_guest_group_template ggt ON egc.guest_group_template_id = ggt.id
     WHERE e.id = ? AND e.calentian_entries_id = ?
+    GROUP BY e.id, e.calentian_kundendaten_id, e.calentian_entries_id, e.location_id, e.datum, e.bis_datum, e.start_time, e.calentian_event_entries_veranstaltungsart_id, e.calentian_event_entries_status_id, e.event_name, k.vorname, k.nachname, k.firma, l.location_name, s.label, s.css_class, va.name, ce.calentian_entries_name, ce.calentian_entries_zusatz, ce.calentian_entries_zusatz_davor
   `;
 
   try {
@@ -324,7 +408,7 @@ app.get("/database/calendar-data", authenticateToken, async (req, res) => {
   try {
     const connection = await db.promise();
 
-    // Events mit JOINs
+    // Events mit JOINs - ANGEPASST für neue Struktur
     const [events] = await connection.execute(
       `
       SELECT 
@@ -335,12 +419,26 @@ app.get("/database/calendar-data", authenticateToken, async (req, res) => {
         va.name AS veranstaltungsart_name,
         va.icon_class AS veranstaltungsart_icon,
         s.css_class AS event_status_css,
-        s.label AS event_status_name
+        s.label AS event_status_name,
+        COALESCE(SUM(egc.guest_count), 0) AS anzahl_personen_gesamt,
+        JSON_ARRAYAGG(
+          JSON_OBJECT(
+            'guest_group_title', ggt.title,
+            'guest_count', egc.guest_count,
+            'min_age', ggt.min_age,
+            'max_age', ggt.max_age,
+            'sort_order', ggt.sort_order
+          )
+            ORDER BY ggt.sort_order ASC
+        ) AS guest_groups
       FROM calentian_event_entries e
       LEFT JOIN calentian_kundendaten k ON e.calentian_kundendaten_id = k.id
       LEFT JOIN calentian_event_entries_veranstaltungsart va ON e.calentian_event_entries_veranstaltungsart_id = va.id
       LEFT JOIN calentian_event_entries_status s ON e.calentian_event_entries_status_id = s.id
+      LEFT JOIN calentian_event_guest_count egc ON e.id = egc.calentian_event_entries_id
+      LEFT JOIN calentian_guest_group_template ggt ON egc.guest_group_template_id = ggt.id
       WHERE e.calentian_entries_id = ?
+      GROUP BY e.id, e.calentian_kundendaten_id, e.calentian_entries_id, e.location_id, e.datum, e.bis_datum, e.start_time, e.calentian_event_entries_veranstaltungsart_id, e.calentian_event_entries_status_id, e.event_name, k.vorname, k.nachname, k.firma, va.name, va.icon_class, s.css_class, s.label
     `,
       [id]
     );
@@ -364,6 +462,205 @@ app.get("/database/calendar-data", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error("❌ Fehler bei /calendar/data:", err);
     res.status(500).json({ message: "Fehler beim Abrufen der Kalenderdaten." });
+  }
+});
+
+// Kalender Einstellungen speichern
+app.post("/database/calendar-settings", authenticateToken, async (req, res) => {
+  const calentian_entries_id = req.user.calentian_entries_id;
+  const calentian_benutzer_id = req.user.calentian_benutzer_id;
+
+  // Validierung der Benutzer-Daten - KEINE Fallback-Werte!
+  if (!calentian_entries_id || !calentian_benutzer_id) {
+    console.error("❌ Fehlende Benutzer-Daten aus JWT Token:", {
+      calentian_entries_id,
+      calentian_benutzer_id,
+      user: req.user,
+    });
+    return res.status(401).json({
+      message: "Ungültige Authentifizierung. Bitte erneut anmelden.",
+    });
+  }
+
+  // Sammle nur die gesendeten Felder
+  const updateData = {};
+  const {
+    feiertage_anzeigen,
+    laender,
+    bundeslaender,
+    default_view_mode,
+    default_hidden_status_ids,
+    opening_days,
+    closing_days,
+  } = req.body;
+
+  // Füge nur definierte Felder hinzu
+  if (feiertage_anzeigen !== undefined)
+    updateData.feiertage_anzeigen = feiertage_anzeigen;
+  if (laender !== undefined) updateData.laender = JSON.stringify(laender);
+  if (bundeslaender !== undefined)
+    updateData.bundeslaender = JSON.stringify(bundeslaender);
+  if (default_view_mode !== undefined)
+    updateData.default_view_mode = default_view_mode;
+  if (default_hidden_status_ids !== undefined)
+    updateData.default_hidden_status_ids = JSON.stringify(
+      default_hidden_status_ids
+    );
+  if (opening_days !== undefined)
+    updateData.opening_days = JSON.stringify(opening_days);
+
+  // Prüfe ob überhaupt Daten zum Update vorhanden sind
+  if (Object.keys(updateData).length === 0 && !closing_days) {
+    return res.status(400).json({
+      message: "Keine Daten zum Aktualisieren angegeben.",
+    });
+  }
+
+  // Debug-Ausgabe
+  console.log("📥 Partielle Kalendereinstellungen Update:");
+  console.log({
+    calentian_entries_id,
+    calentian_benutzer_id,
+    updateData,
+    closing_days: closing_days ? `${closing_days.length} Einträge` : "keine",
+  });
+
+  try {
+    const connection = await db.promise();
+
+    // Prüfen, ob bereits ein Eintrag existiert
+    const [existing] = await connection.execute(
+      `SELECT id FROM calentian_calendar_settings WHERE calentian_entries_id = ? AND calentian_benutzer_id = ?`,
+      [calentian_entries_id, calentian_benutzer_id]
+    );
+
+    if (existing.length > 0) {
+      // Update bestehenden Eintrag - nur gesendete Felder
+      if (Object.keys(updateData).length > 0) {
+        console.log("�� Update bestehender Eintrag:", Object.keys(updateData));
+
+        const setClauses = Object.keys(updateData)
+          .map((key) => `${key} = ?`)
+          .join(", ");
+        const values = Object.values(updateData);
+        values.push(calentian_entries_id, calentian_benutzer_id);
+
+        await connection.execute(
+          `UPDATE calentian_calendar_settings 
+           SET ${setClauses}
+           WHERE calentian_entries_id = ? AND calentian_benutzer_id = ?`,
+          values
+        );
+      }
+    } else {
+      // Neuen Eintrag erstellen - mit Standardwerten für fehlende Felder
+      console.log("➕ Neuer Eintrag wird erstellt");
+
+      const insertData = {
+        calentian_entries_id,
+        calentian_benutzer_id,
+        feiertage_anzeigen: updateData.feiertage_anzeigen ?? true,
+        laender: updateData.laender ?? JSON.stringify(["DE"]),
+        bundeslaender: updateData.bundeslaender ?? JSON.stringify(["BW", "BY"]),
+        default_view_mode: updateData.default_view_mode ?? 2,
+        default_hidden_status_ids:
+          updateData.default_hidden_status_ids ?? JSON.stringify([]),
+        opening_days:
+          updateData.opening_days ?? JSON.stringify([1, 2, 3, 4, 5]),
+      };
+
+      await connection.execute(
+        `INSERT INTO calentian_calendar_settings 
+         (calentian_entries_id, calentian_benutzer_id, feiertage_anzeigen, laender, bundeslaender, default_view_mode, default_hidden_status_ids, opening_days)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        Object.values(insertData)
+      );
+    }
+
+    // Schließtage verarbeiten (falls vorhanden)
+    if (closing_days && Array.isArray(closing_days)) {
+      console.log(
+        "🗓️ Verarbeite Schließtage:",
+        closing_days.length,
+        "Einträge"
+      );
+
+      // Erst alle bestehenden Schließtage für diesen Eintrag löschen
+      await connection.execute(
+        `DELETE FROM calentian_closure_days WHERE calentian_entries_id = ?`,
+        [calentian_entries_id]
+      );
+
+      // Neue Schließtage einfügen
+      for (const closingDay of closing_days) {
+        const { type, start_date, end_date, description } = closingDay;
+
+        // Validierung für jeden Schließtag
+        if (!type || !start_date || !description) {
+          console.error("❌ Ungültiger Schließtag:", closingDay);
+          continue;
+        }
+
+        if (type === "period" && !end_date) {
+          console.error("❌ Zeitraum ohne Enddatum:", closingDay);
+          continue;
+        }
+
+        if (type === "single" && end_date) {
+          console.error("❌ Einzeltag mit Enddatum:", closingDay);
+          continue;
+        }
+
+        // Datum-Validierung
+        const startDate = new Date(start_date);
+        if (isNaN(startDate.getTime())) {
+          console.error("❌ Ungültiges Startdatum:", start_date);
+          continue;
+        }
+
+        if (end_date) {
+          const endDate = new Date(end_date);
+          if (isNaN(endDate.getTime())) {
+            console.error("❌ Ungültiges Enddatum:", end_date);
+            continue;
+          }
+          if (endDate < startDate) {
+            console.error("❌ Enddatum vor Startdatum:", closingDay);
+            continue;
+          }
+        }
+
+        // Schließtag in Datenbank einfügen
+        await connection.execute(
+          `INSERT INTO calentian_closure_days 
+           (calentian_entries_id, type, start_date, end_date, description, created_by) 
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            calentian_entries_id,
+            type,
+            start_date,
+            end_date || null,
+            description,
+            calentian_benutzer_id,
+          ]
+        );
+      }
+
+      console.log("✅ Schließtage erfolgreich verarbeitet");
+    }
+
+    console.log("✅ Kalendereinstellungen erfolgreich gespeichert");
+    res.status(200).json({
+      success: true,
+      message: "Kalendereinstellungen erfolgreich gespeichert.",
+    });
+  } catch (err) {
+    console.error("❌ Fehler beim Speichern der Kalendereinstellungen:", err);
+    res.status(500).json({
+      success: false,
+      message:
+        "Fehler beim Speichern der Einstellungen. Bitte versuchen Sie es erneut.",
+    });
   }
 });
 

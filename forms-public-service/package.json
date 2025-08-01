@@ -1,0 +1,14 @@
+{
+  "name": "forms-public-service",
+  "version": "1.0.0",
+  "main": "forms-public-service.js",
+  "scripts": {
+    "start": "node forms-public-service.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "mysql2": "^3.9.1"
+  }
+}

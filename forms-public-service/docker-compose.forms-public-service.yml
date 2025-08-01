@@ -1,0 +1,20 @@
+services:
+  forms-public-service:
+    build: .
+    container_name: forms-public-service
+    restart: always
+    env_file:
+      - .env
+      - ../calentian.env
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.forms-public-service.rule=Host(`api.calentian.de`) && PathPrefix(`/forms-public-service`)"
+      - "traefik.http.routers.forms-public-service.entrypoints=websecure"
+      - "traefik.http.routers.forms-public-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.forms-public-service.loadbalancer.server.port=6201"
+
+networks:
+  proxy:
+    external: true
