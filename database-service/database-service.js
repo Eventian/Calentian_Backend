@@ -50,7 +50,7 @@ app.use((req, res, next) => {
       "Access-Control-Allow-Methods",
       "GET, POST, PUT, DELETE, OPTIONS"
     );
-    res.header("Access-Control-Allow-Headers", "Content-Type", "Authorization");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.header("Access-Control-Allow-Credentials", "true");
     return res.sendStatus(200);
   }
@@ -131,6 +131,7 @@ const tableFilters = {
   calentian_kunden_emails: "calentian_entries_id = ?",
   calentian_calendar_settings: "calentian_entries_id = ?",
   calentian_closure_days: "calentian_entries_id = ?",
+  calentian_guest_group_template: "calentian_entries_id = ?",
 };
 
 // Datenbankroute für Abruf einer Tabelle
@@ -192,6 +193,58 @@ app.get("/database", authenticateToken, (req, res) => {
 });
 
 // Datenbankroute für den Abruf mehrerer Tabellen
+app.get("/database/multi-request", authenticateToken, (req, res) => {
+  const { requests } = req.body;
+
+  if (!Array.isArray(requests) || requests.length === 0) {
+    return res
+      .status(400)
+      .json({ message: "Keine gültigen Anfragen angegeben." });
+  }
+
+  const results = {};
+  let completed = 0;
+
+  requests.forEach((r) => {
+    const table = r.table;
+    if (!allowedTables.includes(table)) {
+      results[table] = { error: "Ungültiger Tabellenname." };
+      if (++completed === requests.length) return res.json(results);
+      return;
+    }
+
+    let query = "SELECT * FROM ??";
+    const params = [table];
+
+    // Standard-Filter für bestimmte Tabellen
+    let filter = tableFilters[table] || null;
+    if (filter) {
+      query += " WHERE " + filter;
+      params.push(req.user.calentian_entries_id);
+    }
+
+    // Zusätzliche WHERE-Bedingungen aus dem Request
+    if (r.where) {
+      const whereClause = buildWhereClause(r.where);
+      if (whereClause) {
+        query += filter ? " AND " + whereClause : " WHERE " + whereClause;
+        // Parameter für WHERE-Bedingungen hinzufügen
+      }
+    }
+
+    db.query(query, params, (err, rows) => {
+      if (err) {
+        results[table] = { error: "Fehler beim Abrufen: " + err.message };
+      } else {
+        results[table] = rows;
+      }
+      if (++completed === requests.length) {
+        res.json(results);
+      }
+    });
+  });
+});
+
 app.post("/database/multi-request", authenticateToken, (req, res) => {
   const { requests } = req.body;
 
@@ -399,6 +452,118 @@ app.get("/database/event/:id", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error("❌ Fehler beim Abrufen des Events:", err);
     res.status(500).send("Fehler beim Abrufen des Events");
+  }
+});
+
+// 🔒 API-Route: Neues Event anlegen – GEÄNDERT (async/await, initDB)
+app.post("/database/events/new-event", authenticateToken, async (req, res) => {
+  const {
+    calentian_kunden_id,
+    location_id,
+    datum,
+    bis_datum,
+    start_time,
+    calentian_event_entries_veranstaltungsart_id,
+    calentian_event_entries_status_id,
+    event_name,
+    calentian_event_guest_count,
+  } = req.body;
+
+  // Pflichtfelder prüfen
+  if (
+    !calentian_kunden_id ||
+    !location_id ||
+    !datum ||
+    !calentian_event_entries_veranstaltungsart_id ||
+    !calentian_event_entries_status_id
+  ) {
+    return res.status(400).json({ message: "Pflichtfelder fehlen!" });
+  }
+
+  const connection = await db.promise();
+
+  try {
+    const calentian_entries_id = req.user.calentian_entries_id;
+
+    // Veranstaltungsart-Name holen
+    const [vaRows] = await connection.execute(
+      `SELECT name FROM calentian_event_entries_veranstaltungsart WHERE id = ?`,
+      [calentian_event_entries_veranstaltungsart_id]
+    );
+    const artName = vaRows.length > 0 ? vaRows[0].name : "";
+
+    // Kundenname holen
+    const [customerRows] = await connection.execute(
+      `SELECT vorname, firma FROM calentian_kundendaten WHERE id = ?`,
+      [calentian_kunden_id]
+    );
+    let kundeName = "";
+    if (customerRows.length > 0) {
+      kundeName =
+        customerRows[0].firma?.trim() !== ""
+          ? customerRows[0].firma
+          : customerRows[0].vorname;
+    }
+
+    // Fallback für Eventname
+    const finalEventName =
+      event_name?.trim() !== "" ? event_name : `${artName} von ${kundeName}`;
+
+    // Haupt-Event einfügen
+    const [eventResult] = await connection.execute(
+      `
+      INSERT INTO calentian_event_entries (
+        calentian_kundendaten_id,
+        calentian_entries_id,
+        location_id,
+        datum,
+        bis_datum,
+        start_time,
+        calentian_event_entries_veranstaltungsart_id,
+        calentian_event_entries_status_id,
+        event_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        calentian_kunden_id,
+        calentian_entries_id,
+        location_id,
+        datum,
+        bis_datum || null,
+        start_time || null,
+        calentian_event_entries_veranstaltungsart_id,
+        calentian_event_entries_status_id,
+        finalEventName,
+      ]
+    );
+
+    const eventId = eventResult.insertId;
+
+    // Gästegruppen (optional)
+    if (Array.isArray(calentian_event_guest_count)) {
+      for (const group of calentian_event_guest_count) {
+        await connection.execute(
+          `
+          INSERT INTO calentian_event_guest_count (
+            calentian_event_entries_id,
+            guest_group_template_id,
+            guest_count
+          ) VALUES (?, ?, ?)
+        `,
+          [eventId, group.id, group.guest_count || 0]
+        );
+      }
+    }
+
+    await connection.end();
+    res.status(201).json({
+      message: "✅ Event erfolgreich erstellt",
+      eventId,
+    });
+  } catch (err) {
+    console.error("❌ Fehler beim Event erstellen:", err);
+    await connection.end();
+    res.status(500).json({ message: "Fehler beim Erstellen des Events" });
   }
 });
 
