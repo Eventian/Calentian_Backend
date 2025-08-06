@@ -1,25 +1,20 @@
 {
-    "name": "notes-service",
-    "version": "1.0.0",
-    "description": "Backend-Service zum Verwalten von Notizen mit JWT-Authentifizierung",
-    "main": "notes-service.js",
-    "scripts": {
-        "start": "node notes-service.js"
-    },
-    "keywords": [
-        "notes",
-        "express",
-        "mysql",
-        "jwt",
-        "backend"
-    ],
-    "dependencies": {
-        "cookie-parser": "^1.4.7",
-        "cors": "^2.8.5",
-        "dotenv": "^16.0.3",
-        "express": "^4.18.2",
-        "helmet": "^8.1.0",
-        "jsonwebtoken": "^9.0.0",
-        "mysql2": "^3.2.0"
-    }
+  "name": "notes-service",
+  "version": "1.0.0",
+  "description": "Backend-Service zum Verwalten von Notizen mit JWT-Authentifizierung",
+  "type": "module",
+  "main": "notes-service.js",
+  "scripts": {
+    "start": "node notes-service.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.0",
+    "mysql2": "^3.2.0",
+    "axios": "^1.6.8"
+  }
 }

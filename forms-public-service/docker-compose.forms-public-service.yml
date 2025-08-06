@@ -1,11 +1,12 @@
 services:
   forms-public-service:
-    build: .
+    build:
+      context: ..
+      dockerfile: forms-public-service/Dockerfile
     container_name: forms-public-service
     restart: always
     env_file:
       - .env
-      - ../calentian.env
     networks:
       - proxy
     labels:

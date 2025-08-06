@@ -1,18 +1,20 @@
 services:
   event-api:
-    build: .
+    build:
+      context: ..
+      dockerfile: event-api/Dockerfile
     container_name: event-api-service
     networks:
-      - proxy  # Traefik Netzwerk
+      - proxy # Traefik Netzwerk
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.event-api.rule=Host(`api.calentian.de`) && PathPrefix(`/event-api`)"
       - "traefik.http.routers.event-api.entrypoints=websecure"
       - "traefik.http.routers.event-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.event-api.loadbalancer.server.port=4000"  # Intern genutzter Port
+      - "traefik.http.services.event-api.loadbalancer.server.port=4000"
 
     env_file:
-      - ../calentian.env
+      - .env
     restart: always
 
 networks:

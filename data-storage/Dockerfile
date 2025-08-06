@@ -1,20 +1,8 @@
-# Verwende Node.js-Image von Docker Hub
-FROM node:20-alpine
-
-# Arbeitsverzeichnis im Container
+FROM node:24-alpine
 WORKDIR /app
-
-# Kopiere die package.json und package-lock.json, um Abhängigkeiten zu installieren
-COPY package*.json ./
-
-# Installiere die Abhängigkeiten
+COPY data-storage/package*.json ./
 RUN npm install
-
-# Restliche Dateien kopieren
-COPY . .
-
-# Exponiere Port 4200 (wird von Traefik gehandhabt, daher nicht direkt offen)
+COPY data-storage/. ./
+COPY vault-init.js ./vault-init.js
 EXPOSE 4200
-
-# Starte die Anwendung
-CMD ["node", "data-storage-service.js"]
+CMD ["npm", "start"]

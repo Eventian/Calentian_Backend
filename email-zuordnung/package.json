@@ -1,24 +1,25 @@
 {
-    "name": "email-zuordnung",
-    "version": "1.0.0",
-    "main": "email-zuordnung-service.js",
-    "type": "module",
-    "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
-        "start": "node email-zuordnung-service.js"
-    },
-    "keywords": [],
-    "author": "",
-    "license": "ISC",
-    "description": "",
-    "dependencies": {
-        "dotenv": "^16.4.7",
-        "https": "^1.0.0",
-        "imap": "^0.8.17",
-        "mailparser": "^3.7.2",
-        "mysql2": "^3.12.0",
-        "socket.io": "^4.8.1",
-        "socket.io-client": "^4.8.1",
-        "utf7": "^1.0.1"
-    }
+  "name": "email-zuordnung",
+  "version": "1.0.0",
+  "main": "email-zuordnung-service.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node email-zuordnung-service.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "https": "^1.0.0",
+    "imap": "^0.8.17",
+    "mailparser": "^3.7.2",
+    "mysql2": "^3.12.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "utf7": "^1.0.1",
+    "axios": "^1.6.8"
+  }
 }

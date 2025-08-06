@@ -1,34 +1,37 @@
-/******************************************************
- * imap-service-server.js – Polling-Loop: Verarbeite die neuste Mail
- * mit Event-ID-Extraktion und Speicherung von Anhängen
- ******************************************************/
+/***********************************************************************
+ * IMAP-Service (IMAP Polling, Mailparser, MySQL, Vault)
+ *
+ * Pollt Postfach, parst Mails, speichert Inhalte & Anhänge in DB,
+ * zieht IMAP- und DB-Credentials sicher aus Vault.
+ ***********************************************************************/
 
-import Imap from 'imap';
-import * as dotenv from 'dotenv';
-import { simpleParser } from 'mailparser';
-import mysql from 'mysql2/promise';
-import fs from 'fs/promises';
-import path from 'path';
+import * as dotenv from "dotenv";
+import initVault from "./vault-init.js";
+import Imap from "imap";
+import { simpleParser } from "mailparser";
+import mysql from "mysql2/promise";
+import fs from "fs/promises";
+import path from "path";
 
+// Vault-Settings & ENV laden
 dotenv.config();
 
-// Definiere den Pfad zum Attachments-Verzeichnis
-const attachmentsDir = '/opt/imap-server/attachments';
+const attachmentsDir =
+  process.env.ATTACHMENTS_DIR || "/opt/imap-server/attachments";
+let dbPool;
+let imap;
 
-// Stelle sicher, dass das Attachments-Verzeichnis existiert
+// 1) Sicherstellen des Attachments-Verzeichnisses
 async function ensureAttachmentsDir() {
   try {
     await fs.mkdir(attachmentsDir, { recursive: true });
-    console.log(`Attachments-Verzeichnis sichergestellt unter ${attachmentsDir}`);
+    console.log(`✅ Attachments-Verzeichnis: ${attachmentsDir}`);
   } catch (err) {
-    console.error('Fehler beim Erstellen des Attachments-Verzeichnisses:', err);
+    console.error("❌ Fehler beim Erstellen Attachments-Dir:", err);
   }
 }
 
-// Globaler DB-Pool
-let dbPool;
-
-// DB-Pool aufbauen
+// 2) DB-Pool initialisieren
 async function initDB() {
   dbPool = mysql.createPool({
     host: process.env.DB_HOST,
@@ -39,274 +42,173 @@ async function initDB() {
     connectionLimit: 10,
     queueLimit: 0,
   });
-  console.log('Mit der DB verbunden (Pool).');
+  console.log("✅ DB-Pool initialisiert");
 }
 
-// IMAP-Konfiguration
-const imap = new Imap({
-  user: process.env.IMAP_USER,
-  password: process.env.IMAP_PASSWORD,
-  host: process.env.IMAP_HOST,
-  port: Number(process.env.IMAP_PORT) || 993,  // Standard 993, falls nicht gesetzt
-  tls: true,
-  keepalive: false, // Deaktiviert Keepalive, da wir den Polling-Prozess selbst steuern
-});
+// 3) IMAP-Client erstellen
+function initImap() {
+  imap = new Imap({
+    user: process.env.IMAP_USER,
+    password: process.env.IMAP_PASSWORD,
+    host: process.env.IMAP_HOST,
+    port: Number(process.env.IMAP_PORT) || 993,
+    tls: true,
+    keepalive: false,
+  });
 
-// Hauptstart: Zuerst Attachments-Ordner sicherstellen, dann DB verbinden und IMAP starten
-(async () => {
-  try {
-    await ensureAttachmentsDir();
-    await initDB();
-    console.log('Starte IMAP-Connect...');
-    imap.connect();
-  } catch (err) {
-    console.error('Fehler beim Start:', err);
-    process.exit(1);
-  }
-})();
+  imap.once("ready", () => {
+    console.log("📬 IMAP ready, starte Polling...");
+    pollMailbox();
+  });
 
-// Sobald IMAP "ready" ist, starte den Polling-Loop
-imap.once('ready', () => {
-  console.log('IMAP ready. Starte Polling-Loop...');
-  pollMailbox();
-});
+  imap.once("error", (err) => console.error("IMAP-Fehler:", err));
+  imap.once("end", async () => {
+    console.log("❌ IMAP-Verbindung beendet");
+    if (dbPool) await dbPool.end();
+    process.exit(0);
+  });
 
-/**
- * pollMailbox() öffnet den Posteingang, sucht nach allen Nachrichten und
- * verarbeitet jeweils die neueste Mail (höchste UID). Ist der Posteingang leer,
- * wartet es 60 Sekunden und prüft dann erneut.
- */
+  imap.connect();
+}
+
+// 4) Polling-Loop
 function pollMailbox() {
-  imap.openBox('INBOX', false, (err, box) => {
-    if (err) {
-      console.error('Fehler beim Öffnen der INBOX:', err);
-      return setTimeout(pollMailbox, 60000);
-    }
-    console.log('INBOX geöffnet. Suche Nachrichten ...');
-    imap.search(['ALL'], (err, results) => {
-      if (err) {
-        console.error('Fehler bei der Suche:', err);
-        return setTimeout(pollMailbox, 60000);
-      }
-      if (!results || results.length === 0) {
-        console.log('Posteingang ist leer. Warte 30 Sekunden und prüfe erneut...');
-        imap.closeBox(false, () => setTimeout(pollMailbox, 30000));
-        return;
-      }
-      console.log(`Gefundene Nachrichten: ${results.length} UIDs:`, results);
-      // Wähle die höchste UID (neueste Mail)
-      const newestUID = Math.max(...results);
-      console.log(`>>> Verarbeite die neuste Mail mit UID: ${newestUID}`);
-      processNewestMail(newestUID, () => {
-        // Nach der Verarbeitung: Schließe die Mailbox und starte nach 1 Sekunde neu
-        imap.closeBox(true, (closeErr) => {
-          if (closeErr) console.error('Fehler beim Schließen der Mailbox:', closeErr);
-          console.log('Mailbox geschlossen. Starte neue Suche in 1 Sekunde ...');
-          setTimeout(pollMailbox, 1000);
-        });
+  imap.openBox("INBOX", false, (err, box) => {
+    if (err) return retryPoll(60000, "Fehler beim Öffnen INBOX", err);
+    imap.search(["ALL"], (err, uids) => {
+      if (err) return retryPoll(60000, "Fehler bei Suche", err);
+      if (!uids.length)
+        return retryPoll(30000, "Keine Nachrichten, warte", null, true);
+
+      const newest = Math.max(...uids);
+      console.log(`🔍 Neue Mail UID=${newest}`);
+      processNewestMail(newest, () => {
+        imap.closeBox(true, () => setTimeout(pollMailbox, 1000));
       });
     });
   });
 }
 
-/**
- * processNewestMail() verarbeitet eine einzelne Mail:
- * - Abrufen der Mail per UID
- * - Parsen mit simpleParser
- * - Speichern in der DB (inklusive Extraktion der Event-ID)
- * - Speichern der Anhänge in einem lokalen Ordner und Speichern der URL(s) in der DB
- * - Verschieben in den Ordner "DONE" (bei Erfolg) oder "FAILED" (bei DB-Fehler)
- * Nach Abschluss wird der callback() aufgerufen.
- */
-function processNewestMail(uid, callback) {
-  const f = imap.fetch([uid], { bodies: '', struct: true, uid: true });
-  let mailBuffer = '';
+function retryPoll(delay, msg, err, close = false) {
+  console.warn(`⚠️ ${msg}:`, err);
+  if (close) imap.closeBox(false, () => setTimeout(pollMailbox, delay));
+  else setTimeout(pollMailbox, delay);
+}
 
-  f.on('message', (msg) => {
-    console.log(`--- FETCH: Empfange Daten für UID ${uid} ...`);
-    msg.on('body', (stream) => {
-      stream.on('data', (chunk) => {
-        mailBuffer += chunk.toString('utf8');
-      });
-    });
-    msg.once('end', () => {
-      console.log(`--- FETCH: UID ${uid} - Empfang beendet, bodyLength=${mailBuffer.length}`);
-    });
+// 5) Einzelne Mail verarbeiten
+async function processNewestMail(uid, callback) {
+  let buffer = "";
+  const fetch = imap.fetch([uid], { bodies: "", struct: true, uid: true });
+
+  fetch.on("message", (msg) => {
+    msg.on("body", (stream) => stream.on("data", (chunk) => (buffer += chunk)));
   });
 
-  f.once('error', (err) => {
-    console.error(`!!! FETCH-Fehler bei UID ${uid}:`, err);
+  fetch.once("error", (err) => {
+    console.error(`❌ FETCH-Fehler UID=${uid}:`, err);
     callback();
   });
 
-  f.once('end', async () => {
-    console.log(`--- FETCH: 'end'-Event für UID ${uid} - beginne DB-Speicherung...`);
+  fetch.once("end", async () => {
     try {
-      const parsed = await simpleParser(mailBuffer);
-      // Speichere Anhänge (falls vorhanden) und erhalte ein Array von URL-Pfaden
-      let attachmentPaths = [];
-      if (parsed.attachments && parsed.attachments.length > 0) {
-        attachmentPaths = await saveAttachments(parsed.attachments, uid);
-      }
-      // Speichere Mail inkl. Event-ID-Extraktion und Attachment-Pfaden in der DB
+      const parsed = await simpleParser(buffer);
+      const attachmentPaths = await saveAttachments(parsed.attachments, uid);
       await saveMailToDB(parsed, uid, attachmentPaths);
-      console.log(`--- DB: UID ${uid} gespeichert. Verschiebe nach "DONE"...`);
-
-      let moveCallbackCalled = false;
-      const moveTimeout = setTimeout(() => {
-        if (!moveCallbackCalled) {
-          console.log("Move-Callback-Timeout erreicht, fahre mit der nächsten Iteration fort...");
-          callback();
-        }
-      }, 2000);
-
-      imap.move([uid], 'DONE', { uid: true }, (moveErr) => {
-        moveCallbackCalled = true;
-        clearTimeout(moveTimeout);
-        console.log(`########## MOVE-CALLBACK für UID ${uid} erreicht`);
-        if (moveErr) {
-          console.error(`!!! Fehler beim Verschieben UID ${uid}:`, moveErr);
-        } else {
-          console.log(`>>> UID ${uid} erfolgreich nach "DONE" verschoben.`);
-        }
-        console.log('########## Nächste Iteration: Weiter zur nächsten Mail ...');
-        callback();
-      });
+      await moveMessage(uid, "DONE");
     } catch (err) {
-      console.error(`!!! Fehler beim Verarbeiten UID ${uid}:`, err);
-      console.log(`Verschiebe UID ${uid} in den Ordner "FAILED"...`);
-      let moveCallbackCalled = false;
-      const moveTimeout = setTimeout(() => {
-        if (!moveCallbackCalled) {
-          console.log("Move-Callback-Timeout (FAILED) erreicht, fahre mit der nächsten Iteration fort...");
-          callback();
-        }
-      }, 2000);
-      imap.move([uid], 'FAILED', { uid: true }, (moveErr) => {
-        moveCallbackCalled = true;
-        clearTimeout(moveTimeout);
-        console.log(`########## MOVE-CALLBACK für UID ${uid} (FAILED) erreicht`);
-        if (moveErr) {
-          console.error(`!!! Fehler beim Verschieben UID ${uid} in FAILED:`, moveErr);
-        } else {
-          console.log(`>>> UID ${uid} erfolgreich nach "FAILED" verschoben.`);
-        }
-        console.log('########## Weiter zur nächsten Mail nach FAILED-Versuch ...');
-        callback();
-      });
+      console.error(`❌ Fehler Verarbeitung UID=${uid}:`, err);
+      await moveMessage(uid, "FAILED");
+    } finally {
+      callback();
     }
   });
 }
 
-/**
- * Speichert die geparste Mail in der DB.
- * Extrahiert dabei optional die Event-ID aus dem Betreff (z.B. "//Event-ID: 26")
- * und speichert die Attachment-URLs als JSON-String.
- */
-async function saveMailToDB(parsed, uid, attachmentPaths) {
-  const subject = parsed.subject || '';
-  const textBody = parsed.text || '';
-  const htmlBody = parsed.html
-    ? parsed.html
-    : `<pre>${textBody.replace(/&/g, '&amp;')
-                       .replace(/</g, '&lt;')
-                       .replace(/>/g, '&gt;')}</pre>`;
-  const sender = (parsed.from && parsed.from.value && parsed.from.value.length > 0)
-    ? parsed.from.value[0].address
-    : '';
-  const receiver = (parsed.to && parsed.to.value && parsed.to.value.length > 0)
-    ? parsed.to.value[0].address
-    : '';
-  // Den unparsierten Empfänger-String aus dem Header auslesen (z.B. "Max Mustermann <max@example.com>")
-  const receiverUnparsed = (parsed.to && parsed.to.text) ? parsed.to.text : receiver;
-  const mailDate = parsed.date ? new Date(parsed.date) : new Date();
-
-  // Extrahiere Event-ID aus dem Betreff, falls vorhanden
-  let eventId = null;
-  const eventIdMatch = subject.match(/event[\s-]*id[\s:-]*(\d+)/i);
-  if (eventIdMatch) {
-    eventId = parseInt(eventIdMatch[1], 10);
-    console.log(`Event-ID ${eventId} extrahiert aus Betreff.`);
-  } else {
-    console.log('Keine Event-ID im Betreff gefunden.');
-  }
-
-  console.log(`--- Speichere Mail UID ${uid} in DB:`, {
-    subject: subject.substring(0, 50),
-    sender,
-    receiver,
-    receiverUnparsed,
-    date: mailDate,
-    attachmentPaths,
-    eventId,
+// 6) Mail verschieben
+function moveMessage(uid, box) {
+  return new Promise((resolve) => {
+    let called = false;
+    const timeout = setTimeout(() => {
+      if (!called) resolve();
+    }, 2000);
+    imap.move([uid], box, { uid: true }, (err) => {
+      called = true;
+      clearTimeout(timeout);
+      if (err) console.error(`❌ Move UID=${uid}→${box} Fehler:`, err);
+      else console.log(`✅ UID=${uid}→${box}`);
+      resolve();
+    });
   });
+}
+
+// 7) Mail in DB speichern
+async function saveMailToDB(parsed, uid, attachments) {
+  const subject = parsed.subject || "";
+  const text = parsed.text || "";
+  const html = parsed.html || `<pre>${text.replace(/</g, "&lt;")}</pre>`;
+  const sender = parsed.from?.value?.[0]?.address || "";
+  const receiver = parsed.to?.value?.[0]?.address || "";
+  const receiverUnparsed = parsed.to?.text || receiver;
+  const date = parsed.date
+    ? parsed.date.toISOString().slice(0, 19).replace("T", " ")
+    : new Date().toISOString().slice(0, 19).replace("T", " ");
+
+  const eidMatch = subject.match(/event[-\s]*id[:\s]*(\d+)/i);
+  const eventId = eidMatch ? Number(eidMatch[1]) : null;
 
   await dbPool.execute(
     `INSERT INTO calentian_kunden_emails
-       (subject, body, htmlBody, timestamp, sender, receiver, receiver_unparsed, message_ingoing, calentian_event_entries_id, attachments)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     (subject, body, htmlBody, timestamp, sender, receiver, receiver_unparsed, message_ingoing, calentian_event_entries_id, attachments)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
     [
       subject,
-      textBody,
-      htmlBody,
-      mailDate.toISOString().slice(0, 19).replace('T', ' '),
+      text,
+      html,
+      date,
       sender,
       receiver,
       receiverUnparsed,
-      1,  // Da es sich um eingehende Nachrichten handelt
-      eventId, // falls vorhanden, oder NULL
-      attachmentPaths && attachmentPaths.length > 0 ? JSON.stringify(attachmentPaths) : null,
+      1,
+      eventId,
+      attachments.length ? JSON.stringify(attachments) : null,
     ]
-  );  
+  );
+  console.log(`💾 Mail UID=${uid} gespeichert, eid=${eventId}`);
 }
 
-
-/**
- * Speichert alle Anhänge in den Ordner attachmentsDir.
- * Falls der Dateiname schon existiert, wird eine Zahl hinzugefügt.
- * Gibt ein Array mit den relativen URL-Pfaden (z.B. "/attachments/filename") zurück.
- */
-async function saveAttachments(attachments, uid) {
-  const savedPaths = [];
-  for (const attachment of attachments) {
-    let originalName = attachment.filename || `attachment_${uid}`;
-    let filePath = path.join(attachmentsDir, originalName);
-
-    // Falls die Datei existiert, füge einen Zähler hinzu (ähnlich Windows Explorer)
-    let counter = 1;
-    const ext = path.extname(originalName);
-    const baseName = path.basename(originalName, ext);
+// 8) Attachments speichern
+async function saveAttachments(list, uid) {
+  const paths = [];
+  for (const a of list) {
+    const fname = a.filename || `attachment_${uid}`;
+    let dest = path.join(attachmentsDir, fname);
+    let cnt = 1;
+    const ext = path.extname(fname);
+    const base = path.basename(fname, ext);
     while (true) {
       try {
-        await fs.access(filePath);
-        // Datei existiert, versuche einen neuen Namen
-        filePath = path.join(attachmentsDir, `${baseName}(${counter})${ext}`);
-        counter++;
-      } catch (err) {
-        // Datei existiert nicht, breche die Schleife ab
+        await fs.access(dest);
+        dest = path.join(attachmentsDir, `${base}(${cnt++})${ext}`);
+      } catch {
         break;
       }
     }
-
-    // Schreibe den Anhang (attachment.content ist ein Buffer)
-    await fs.writeFile(filePath, attachment.content);
-    // Erzeuge einen URL-Pfad. Hier nehmen wir an, dass der Ordner /opt/imap-server/attachments
-    // im Webserver als "/attachments" verfügbar ist.
-    const urlPath = `/attachments/${path.basename(filePath)}`;
-    console.log(`Attachment "${originalName}" gespeichert als "${urlPath}"`);
-    savedPaths.push(urlPath);
+    await fs.writeFile(dest, a.content);
+    const url = `/attachments/${path.basename(dest)}`;
+    paths.push(url);
   }
-  return savedPaths;
+  return paths;
 }
 
-// IMAP Fehler- und End-Events
-imap.once('error', (err) => {
-  console.error('IMAP Fehler:', err);
-});
-
-imap.once('end', () => {
-  console.log('IMAP-Verbindung beendet.');
-  if (dbPool) {
-    dbPool.end().then(() => console.log('DB-Pool geschlossen.'));
+// 9) Bootstrap: Vault → Anhänge → DB → IMAP
+(async () => {
+  try {
+    await initVault();
+    await ensureAttachmentsDir();
+    await initDB();
+    initImap();
+  } catch (err) {
+    console.error("Startup-Error:", err);
+    process.exit(1);
   }
-});
+})();

@@ -1,50 +1,35 @@
-require("dotenv").config();
-const express = require("express");
-// Verwende die promise-basierte Variante von mysql2:
-const mysql = require("mysql2/promise");
-const cors = require("cors");
-const jwt = require("jsonwebtoken");
+import * as dotenv from "dotenv";
+import initVault from "./vault-init.js";
+import express from "express";
+import mysql from "mysql2/promise";
+import cors from "cors";
+import jwt from "jsonwebtoken";
 
+// Lade Vault-Konfiguration (VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID, VAULT_SECRETS)
+dotenv.config();
+
+// Globale Variablen
+let db;
 const app = express();
-const PORT = process.env.PORT || 4000;
 
-app.use(cors());
-app.use(express.json());
-
-// ✅ Globale DB-Verbindung (für Endpunkte, die synchron arbeiten)
-// Für Endpunkte, die async/await nutzen, verwenden wir initDB().
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-});
-
-db.then((connection) => {
-  console.log("✅ Mit der MySQL-Datenbank verbunden");
-}).catch((err) => {
-  console.error("❌ Fehler bei der Datenbankverbindung:", err);
-});
-
-// Neue Funktion: initDB für Endpunkte, die async/await nutzen
+// Initialisierung der DB-Verbindung
 async function initDB() {
-  return await mysql.createConnection({
+  db = await mysql.createConnection({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
   });
+  console.log("✅ Mit der MySQL-Datenbank verbunden");
 }
 
-// 🔐 Middleware: Token-Authentifizierung
+// Middleware: JWT-Authentifizierung
 function authenticateToken(req, res, next) {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
-
   if (!token) {
     return res.status(401).json({ message: "Kein Token gefunden." });
   }
-
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
     if (err) {
       return res.status(403).json({ message: "Ungültiger Token." });
@@ -53,6 +38,10 @@ function authenticateToken(req, res, next) {
     next();
   });
 }
+
+// Express-Konfiguration
+app.use(cors());
+app.use(express.json());
 
 // 🔒 API-Route: Alle Locations mit Event-Zuordnung
 app.get("/event-api/api/locations", authenticateToken, async (req, res) => {
@@ -83,44 +72,35 @@ app.get("/event-api/api/locations", authenticateToken, async (req, res) => {
 // 🔒 API-Route: Einzelnes Event nach ID abrufen
 app.get("/event-api/api/events/:id", authenticateToken, async (req, res) => {
   const eventId = req.params.id;
-
   const query = `
-  SELECT 
-    e.*, 
-    k.vorname, 
-    k.nachname, 
-    k.firma, 
-    l.location_name, 
-    s.label AS event_status_label, 
-    s.css_class AS event_status_css, 
-    va.name AS veranstaltungsart_label,
-    ce.calentian_entries_name,
-    ce.calentian_entries_zusatz,
-    ce.calentian_entries_zusatz_davor
-  FROM calentian_event_entries e
-  JOIN calentian_kundendaten k ON e.calentian_kundendaten_id = k.id
-  JOIN calentian_entries_location l ON e.location_id = l.id
-  LEFT JOIN calentian_event_entries_status s ON e.calentian_event_entries_status_id = s.id
-  LEFT JOIN calentian_event_entries_veranstaltungsart va ON e.calentian_event_entries_veranstaltungsart_id = va.id
-  JOIN calentian_entries ce ON e.calentian_entries_id = ce.id
-  WHERE e.id = ? AND e.calentian_entries_id = ?
-`;
-
+    SELECT 
+      e.*, 
+      k.vorname, 
+      k.nachname, 
+      k.firma, 
+      l.location_name, 
+      s.label AS event_status_label, 
+      s.css_class AS event_status_css, 
+      va.name AS veranstaltungsart_label,
+      ce.calentian_entries_name,
+      ce.calentian_entries_zusatz,
+      ce.calentian_entries_zusatz_davor
+    FROM calentian_event_entries e
+    JOIN calentian_kundendaten k ON e.calentian_kundendaten_id = k.id
+    JOIN calentian_entries_location l ON e.location_id = l.id
+    LEFT JOIN calentian_event_entries_status s ON e.calentian_event_entries_status_id = s.id
+    LEFT JOIN calentian_event_entries_veranstaltungsart va ON e.calentian_event_entries_veranstaltungsart_id = va.id
+    JOIN calentian_entries ce ON e.calentian_entries_id = ce.id
+    WHERE e.id = ? AND e.calentian_entries_id = ?
+  `;
   try {
-    const connection = await initDB();
-    const [results] = await connection.execute(query, [
+    const [results] = await db.execute(query, [
       eventId,
       req.user.calentian_entries_id,
     ]);
-    await connection.end();
-
-    if (results.length === 0) {
+    if (results.length === 0)
       return res.status(404).json({ message: "Event nicht gefunden" });
-    }
-
     const event = results[0];
-    // Falls customer_emails als kommagetrennte Liste in der DB gespeichert wurde,
-    // konvertieren wir diese in ein Array.
     event.customer_emails = event.customer_emails
       ? event.customer_emails.split(",")
       : [];
@@ -589,7 +569,24 @@ app.get(
   }
 );
 
-// 🔥 Server starten
-app.listen(PORT, () => {
-  console.log(`🚀 Server läuft auf Port ${PORT}`);
-});
+async function bootstrap() {
+  try {
+    // 1) Secrets von Vault laden (DB-Creds, JWT_SECRET, ggf. PORT)
+    await initVault();
+
+    // 2) DB initialisieren
+    await initDB();
+
+    // 3) Server starten
+    const PORT = process.env.PORT || 4000;
+    app.listen(PORT, () => {
+      console.log(`🚀 Server läuft auf Port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("Startup-Error:", err);
+    process.exit(1);
+  }
+}
+
+// Starte Bootstrap
+bootstrap();

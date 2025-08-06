@@ -1,11 +1,12 @@
 services:
   login-service:
-    build: .
+    build:
+      context: ..
+      dockerfile: login-service/Dockerfile
     container_name: login-service
     restart: unless-stopped
     env_file:
       - .env
-      - ../calentian.env
     networks:
       - proxy
     labels:

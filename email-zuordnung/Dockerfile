@@ -1,20 +1,8 @@
-# Basis-Image verwenden
-FROM node:20-alpine
-
-# Arbeitsverzeichnis im Container erstellen
+FROM node:24-alpine
 WORKDIR /app
-
-# Kopiere die package.json und package-lock.json, um die Abhängigkeiten zu installieren
-COPY package*.json ./
-
-# Installiere die Abhängigkeiten
+COPY email-zuordnung/package*.json ./
 RUN npm install
-
-# Kopiere den Rest des Codes
-COPY . .
-
-# Port freigeben (aber wir machen keine Portweiterleitung, Traefik übernimmt das)
+COPY email-zuordnung/. ./
+COPY vault-init.js ./vault-init.js
 EXPOSE 5200
-
-# Startbefehl für den Container
 CMD ["npm", "start"]

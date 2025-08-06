@@ -1,11 +1,12 @@
 services:
   notes-service:
-    build: .
+    build:
+      context: ..
+      dockerfile: notes-service/Dockerfile
     container_name: notes-service
     restart: always
     env_file:
       - .env
-      - ../calentian.env
     networks:
       - proxy
     labels:

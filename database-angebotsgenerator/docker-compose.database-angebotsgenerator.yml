@@ -1,6 +1,8 @@
 services:
   database-angebotsgenerator-service:
-    build: .
+    build:
+      context: ..
+      dockerfile: database-angebotsgenerator/Dockerfile
     container_name: database-angebotsgenerator
     networks:
       - proxy # Traefik Netzwerk
@@ -11,7 +13,7 @@ services:
       - "traefik.http.routers.database-angebotsgenerator-service.tls.certresolver=letsencrypt"
       - "traefik.http.services.database-angebotsgenerator-service.loadbalancer.server.port=4150" # Intern genutzter Port
     env_file:
-      - ../calentian.env # Zusätzliche Umgebungsvariablen
+      - .env # Zusätzliche Umgebungsvariablen
     restart: always
 
 networks:

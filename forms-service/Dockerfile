@@ -1,20 +1,8 @@
-# Basis-Image
-FROM node:20-alpine
-
-# Arbeitsverzeichnis im Container
+FROM node:24-alpine
 WORKDIR /app
-
-# Kopieren der Package.json und package-lock.json (falls vorhanden)
-COPY package*.json ./
-
-# Installieren der Abhängigkeiten
+COPY forms-service/package*.json ./
 RUN npm install
-
-# Kopieren des gesamten Codes in das Arbeitsverzeichnis
-COPY . .
-
-# Exponiere den Port 6200
+COPY forms-service/. ./
+COPY vault-init.js ./vault-init.js
 EXPOSE 6200
-
-# Befehl zum Starten des Services
 CMD ["npm", "start"]

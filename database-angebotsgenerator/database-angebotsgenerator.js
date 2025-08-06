@@ -2,19 +2,24 @@ import express from "express";
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 import cors from "cors";
+import initVault from "./vault-init.js";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 4150;
 
+// 🔐 Vault-Login (Secrets laden BEVOR DB-Verbindung aufgebaut wird!)
+await initVault();
+
 // ✨ CORS aktivieren
 app.use(
   cors({
-    origin: ["http://localhost:4200", "https://angebote.calentian.de"],
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || [],
     methods: ["GET", "POST"],
   })
 );
+
 // MySQL-Pool (wie bei deinen anderen Services)
 const pool = mysql.createPool({
   host: process.env.DB_HOST,

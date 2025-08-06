@@ -1,18 +1,19 @@
 services:
-  database-service:
-    build: .
+  data-storage-service:
+    build:
+      context: ..
+      dockerfile: data-storage/Dockerfile
     container_name: data-storage-service
     networks:
-      - proxy  # Traefik Netzwerk
+      - proxy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.data-storage-service.rule=Host(`api.calentian.de`) && PathPrefix(`/data-storage`)"
       - "traefik.http.routers.data-storage-service.entrypoints=websecure"
       - "traefik.http.routers.data-storage-service.tls.certresolver=letsencrypt"
-      - "traefik.http.services.data-storage-service.loadbalancer.server.port=4200"  # Intern genutzter Port
+      - "traefik.http.services.data-storage-service.loadbalancer.server.port=4200"
     env_file:
-      - .env  # Umgebungsvariablen aus der .env-Datei
-      - ../calentian.env  # Zusätzliche Umgebungsvariablen
+      - .env
     restart: always
 
 networks:

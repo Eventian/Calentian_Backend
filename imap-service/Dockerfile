@@ -1,15 +1,8 @@
-# Basis-Image: Node 18 (alpine ist klein und schnell)
-FROM node:20-alpine
-
-# Arbeitsverzeichnis im Container
+FROM node:24-alpine
 WORKDIR /app
-
-# Package-Dateien kopieren und Abhängigkeiten installieren
-COPY package*.json ./ 
+COPY imap-service/package*.json ./
 RUN npm install
-
-# Restliche Dateien (imap-service.js, .env etc.) kopieren
-COPY . .
-
-# Standardbefehl zum Starten der App
-CMD ["node", "imap-service.js"]
+COPY imap-service/. ./
+COPY vault-init.js ./vault-init.js
+EXPOSE 5200
+CMD ["npm", "start"]

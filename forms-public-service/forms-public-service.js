@@ -1,31 +1,44 @@
-const express = require("express");
-const cors = require("cors");
-require("dotenv").config();
-const mysql = require("mysql2/promise");
+/***********************************************************************
+ * Forms-Public-Service (Express, MySQL, CORS, Vault)
+ *
+ * Bietet eine Verfügbarkeits-Abfrage via /forms-public-service/availability-batch
+ * Authentifiziert per Token (EMBED_FORM_TOKEN) und zieht DB-Credentials
+ * sowie das Embed-Token sicher aus Vault.
+ ***********************************************************************/
+
+import * as dotenv from "dotenv";
+import initVault from "./vault-init.js";
+import express from "express";
+import cors from "cors";
+import mysql from "mysql2/promise";
+
+// Lade Vault-Settings (VAULT_ADDR, VAULT_ROLE_ID, VAULT_SECRET_ID, VAULT_SECRETS)
+dotenv.config();
 
 const app = express();
 
-// 🌍 Öffne CORS für alle Domains (z. B. www.kinderhospizdienst-offenburg.de)
-app.use(cors({ origin: true }));
+// Globale DB-Variable
+let dbConnection;
 
-// 📦 JSON-Body aktivieren (nicht zwingend nötig für GET)
-app.use(express.json());
-
-// 🧠 Datenbankverbindung
+// Initialisierung der DB-Verbindung
 async function initDB() {
-  return mysql.createConnection({
+  dbConnection = await mysql.createConnection({
     host: process.env.DB_HOST,
     port: process.env.DB_PORT || 3306,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
   });
+  console.log("✅ Mit der MySQL-Datenbank verbunden");
 }
 
-// 🐞 Preflight-Handler (OPTIONS-Anfragen von Browsern)
+// CORS- und JSON-Middleware
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json());
+
+// Preflight für Verfügbarkeits-Route
 app.options("/forms-public-service/availability-batch", (req, res) => {
-  console.log("👉 OPTIONS-Preflight erkannt");
-  console.log("🔍 Origin:", req.headers.origin);
+  console.log("👉 OPTIONS-Preflight erkannt", req.headers.origin);
   res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
@@ -33,13 +46,9 @@ app.options("/forms-public-service/availability-batch", (req, res) => {
   res.sendStatus(204);
 });
 
-// 🧪 Verfügbarkeitsabfrage mit vollständiger CORS-Debug-Logik
+// Verfügbarkeits-Route
 app.get("/forms-public-service/availability-batch", async (req, res) => {
-  console.log("👉 GET-Verfügbarkeitsroute aufgerufen");
-  console.log("🔐 Origin:", req.headers.origin);
-  console.log("🔐 Authorization:", req.get("Authorization"));
-
-  // 🌍 Manuelles Setzen der CORS-Header
+  console.log("👉 GET /availability-batch aufgerufen", req.headers.origin);
   res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
   res.setHeader("Access-Control-Allow-Credentials", "true");
 
@@ -50,7 +59,6 @@ app.get("/forms-public-service/availability-batch", async (req, res) => {
   }
 
   const { form_id, year, month } = req.query;
-
   if (!form_id || !year || !month) {
     console.warn("❌ Fehlende Parameter:", req.query);
     return res
@@ -58,11 +66,10 @@ app.get("/forms-public-service/availability-batch", async (req, res) => {
       .json({ error: "Fehlende Parameter: form_id, year und month" });
   }
 
-  const conn = await initDB();
-
   try {
-    const [[formRow]] = await conn.execute(
-      "SELECT calentian_entries_id FROM calentian_entries_forms WHERE id = ?",
+    // Lade entryId zum Formular
+    const [[formRow]] = await dbConnection.execute(
+      `SELECT calentian_entries_id FROM calentian_entries_forms WHERE id = ?`,
       [form_id]
     );
     if (!formRow) {
@@ -70,31 +77,32 @@ app.get("/forms-public-service/availability-batch", async (req, res) => {
     }
 
     const entryId = formRow.calentian_entries_id;
-    const startDate = `${year}-${month.padStart(2, "0")}-01`;
+    const startDate = `${year}-${month.toString().padStart(2, "0")}-01`;
     const endDate = new Date(year, month, 0).toISOString().split("T")[0];
 
-    const [eventBlocks] = await conn.execute(
+    // Event-Blöcke
+    const [eventBlocks] = await dbConnection.execute(
       `SELECT datum, bis_datum FROM calentian_event_entries
        WHERE calentian_entries_id = ?
-         AND calentian_event_entries_status_id IN (4, 5, 6, 8)
+         AND calentian_event_entries_status_id IN (4,5,6,8)
          AND (
-           (datum BETWEEN ? AND ?)
-           OR (bis_datum BETWEEN ? AND ?)
-           OR (datum <= ? AND bis_datum >= ?)
+           (datum BETWEEN ? AND ?) OR
+           (bis_datum BETWEEN ? AND ?) OR
+           (datum <= ? AND bis_datum >= ?)
          )`,
       [entryId, startDate, endDate, startDate, endDate, startDate, endDate]
     );
 
-    const [closureBlocks] = await conn.execute(
+    // Schließungs-Blöcke
+    const [closureBlocks] = await dbConnection.execute(
       `SELECT start_date, end_date, type FROM calentian_closure_days
        WHERE calentian_entries_id = ?
          AND (
-           (type = 'single' AND start_date BETWEEN ? AND ?)
-           OR
-           (type = 'period' AND (
-             (start_date BETWEEN ? AND ?)
-             OR (end_date BETWEEN ? AND ?)
-             OR (start_date <= ? AND end_date >= ?)
+           (type='single' AND start_date BETWEEN ? AND ?) OR
+           (type='period' AND (
+             (start_date BETWEEN ? AND ?) OR
+             (end_date BETWEEN ? AND ?) OR
+             (start_date <= ? AND end_date >= ?)
            ))
          )`,
       [
@@ -110,48 +118,64 @@ app.get("/forms-public-service/availability-batch", async (req, res) => {
       ]
     );
 
+    // Zusammenführen
     const blockedDates = new Set();
     const blockedReasons = {};
 
-    eventBlocks.forEach((event) => {
-      const start = new Date(event.datum);
-      const end = new Date(event.bis_datum);
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().split("T")[0];
-        if (dateStr >= startDate && dateStr <= endDate) {
-          blockedDates.add(dateStr);
-          blockedReasons[dateStr] = "event";
+    for (const ev of eventBlocks) {
+      const from = new Date(ev.datum);
+      const to = new Date(ev.bis_datum);
+      for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+        const iso = d.toISOString().split("T")[0];
+        if (iso >= startDate && iso <= endDate) {
+          blockedDates.add(iso);
+          blockedReasons[iso] = "event";
         }
       }
-    });
+    }
 
-    closureBlocks.forEach((closure) => {
-      const start = new Date(closure.start_date);
-      const end =
-        closure.type === "single" ? start : new Date(closure.end_date);
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        const dateStr = d.toISOString().split("T")[0];
-        if (dateStr >= startDate && dateStr <= endDate) {
-          blockedDates.add(dateStr);
-          blockedReasons[dateStr] = "closure";
+    for (const cl of closureBlocks) {
+      const from = new Date(cl.start_date);
+      const to =
+        cl.type === "single" ? new Date(cl.start_date) : new Date(cl.end_date);
+      for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+        const iso = d.toISOString().split("T")[0];
+        if (iso >= startDate && iso <= endDate) {
+          blockedDates.add(iso);
+          blockedReasons[iso] = "closure";
         }
       }
-    });
+    }
 
-    return res.json({
+    res.json({
       blocked_dates: Array.from(blockedDates).sort(),
       blocked_reasons: blockedReasons,
     });
   } catch (err) {
     console.error("❌ Verfügbarkeitsprüfung fehlgeschlagen:", err);
-    return res.status(500).json({ error: "Serverfehler" });
-  } finally {
-    await conn.end();
+    res.status(500).json({ error: "Serverfehler" });
   }
 });
 
-// 🚀 Server starten
-const PORT = process.env.PORT || 6201;
-app.listen(PORT, () => {
-  console.log(`Forms-Public-Service listening on port ${PORT}`);
-});
+// Bootstrap: Vault → DB → Server starten
+async function bootstrap() {
+  try {
+    // Vault-Login & Secrets laden
+    const secrets = await initVault();
+    console.log("🔑 Vault-Secrets geladen");
+
+    // DB-Verbindung aufbauen
+    await initDB();
+
+    // Server starten
+    const PORT = process.env.PORT || 6201;
+    app.listen(PORT, () =>
+      console.log(`🚀 Forms-Public-Service auf Port ${PORT}`)
+    );
+  } catch (err) {
+    console.error("Startup-Error:", err);
+    process.exit(1);
+  }
+}
+
+bootstrap();

@@ -1,20 +1,8 @@
-# Verwende Node.js-Image von Docker Hub
-FROM node:20-alpine
-
-# Arbeitsverzeichnis im Container
+FROM node:24-alpine
 WORKDIR /app
-
-# Kopiere die package.json und package-lock.json, um Abhängigkeiten zu installieren
-COPY package*.json ./
-
-# Installiere die Abhängigkeiten
+COPY event-api/package*.json ./
 RUN npm install
-
-# Restliche Dateien kopieren
-COPY . .
-
-# Exponiere Port 4000 (wird von Traefik gehandhabt, daher nicht direkt offen)
+COPY event-api/. ./
+COPY vault-init.js ./vault-init.js
 EXPOSE 4000
-
-# Starte die Anwendung
 CMD ["npm", "start"]

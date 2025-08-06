@@ -1,6 +1,8 @@
-FROM node:20-alpine
+FROM node:24-alpine
 WORKDIR /app
-COPY package*.json ./
+COPY forms-public-service/package*.json ./
 RUN npm install
-COPY . .
-CMD ["node", "forms-public-service.js"]
+COPY forms-public-service/. ./
+COPY vault-init.js ./vault-init.js
+EXPOSE 6201
+CMD ["npm", "start"]

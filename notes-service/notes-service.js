@@ -1,142 +1,185 @@
-require('dotenv').config();
-const express = require('express');
-const mysql = require('mysql2');
-const jwt = require('jsonwebtoken');
-const cors = require('cors');
-const helmet = require('helmet');
-const cookieParser = require('cookie-parser');
+/***********************************************************************
+ * Notes-Service (Express, MySQL, CORS, JWT, Vault)
+ *
+ * Bietet CRUD-Endpunkte für Notizen, zieht DB- und JWT-Credentials aus Vault,
+ * schützt Routen per JWT-Token in HTTP-only Cookie.
+ ***********************************************************************/
+
+import * as dotenv from "dotenv";
+import initVault from "./vault-init.js";
+import express from "express";
+import mysql from "mysql2/promise";
+import jwt from "jsonwebtoken";
+import cors from "cors";
+import helmet from "helmet";
+import cookieParser from "cookie-parser";
+
+// Lade ENV und Vault-Settings
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 6100;
 
-app.set('trust proxy', 1);
-app.use(helmet());
-app.use(cookieParser());
-app.use(express.json());
+let dbPool;
 
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
-  : ['http://localhost:4200', 'https://dashboard.calentian.de'];
+// 1) DB-Pool initialisieren
+async function initDB() {
+  dbPool = mysql.createPool({
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 3306,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+  });
+  console.log("✅ DB-Pool verbunden");
+}
 
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error('Origin not allowed by CORS'));
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
-  credentials: true,
-};
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
-
-const pool = mysql.createPool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 1000,
-  queueLimit: 0,
-});
-
-// Authentifizierung via HTTP-only Cookie
+// 2) Auth-Middleware
 function authenticateToken(req, res, next) {
-  const token = req.cookies['access_token'];
-  if (!token) return res.status(401).json({ error: 'Kein Token vorhanden.' });
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, payload) => {
-    if (err) return res.status(403).json({ error: 'Token ungültig.' });
-    req.user = payload;
+  const token = req.cookies["access_token"];
+  if (!token) return res.status(401).json({ error: "Kein Token vorhanden." });
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: "Token ungültig." });
+    req.user = user;
     next();
   });
 }
 
-// GET Notizen
-app.get('/notes-service/notes', authenticateToken, (req, res) => {
-  const eventId = req.query.eventId;
-  if (!eventId) return res.status(400).json({ error: 'Event-ID fehlt.' });
+// 3) Middleware
+app.set("trust proxy", 1);
+app.use(helmet());
+app.use(cookieParser());
+app.use(express.json());
 
-  const sql = `
-    SELECT n.id, n.time, n.note, n.calentian_event_entries_id, n.calentian_benutzer_id,
-           b.benutzername, b.email
-    FROM calentian_notes n
-    LEFT JOIN calentian_benutzer b ON n.calentian_benutzer_id = b.id
-    WHERE n.calentian_event_entries_id = ?
-    ORDER BY n.time DESC
-  `;
-  pool.query(sql, [eventId], (err, results) => {
-    if (err) return res.status(500).json({ error: err });
-    res.json(results);
-  });
+const allowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error("Origin not allowed by CORS"));
+  },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type"],
+  credentials: true,
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// Debug: Cookies
+app.use((req, res, next) => {
+  console.log("Cookies:", req.cookies);
+  next();
 });
 
-// POST Notiz
-app.post('/notes-service/notes', authenticateToken, (req, res) => {
+// 4) Endpunkte
+// GET /notes-service/notes?eventId=
+app.get("/notes-service/notes", authenticateToken, async (req, res) => {
+  const eventId = req.query.eventId;
+  if (!eventId) return res.status(400).json({ error: "Event-ID fehlt." });
+  try {
+    const sql = `
+      SELECT n.id, n.time, n.note, n.calentian_event_entries_id AS event_id, n.calentian_benutzer_id AS user_id,
+             b.benutzername, b.email
+      FROM calentian_notes n
+      LEFT JOIN calentian_benutzer b ON n.calentian_benutzer_id = b.id
+      WHERE n.calentian_event_entries_id = ?
+      ORDER BY n.time DESC
+    `;
+    const [rows] = await dbPool.execute(sql, [eventId]);
+    res.json(rows);
+  } catch (err) {
+    console.error("❌ Fehler beim Abrufen der Notizen:", err);
+    res.status(500).json({ error: "Fehler beim Abrufen der Notizen" });
+  }
+});
+
+// POST /notes-service/notes
+app.post("/notes-service/notes", authenticateToken, async (req, res) => {
   const { note, calentian_event_entries_id } = req.body;
   const userId = req.user.id;
   const entryId = calentian_event_entries_id || req.user.calentian_entries_id;
-
-  if (!note) return res.status(400).json({ error: 'Notiz fehlt.' });
-
-  const sql = `
-    INSERT INTO calentian_notes (note, calentian_event_entries_id, calentian_benutzer_id)
-    VALUES (?, ?, ?)
-  `;
-  pool.query(sql, [note, entryId, userId], (err, result) => {
-    if (err) return res.status(500).json({ error: err });
-
-    pool.query('SELECT * FROM calentian_notes WHERE id = ?', [result.insertId], (err2, rows) => {
-      if (err2) return res.status(500).json({ error: err2 });
-      res.status(201).json(rows[0]);
-    });
-  });
+  if (!note) return res.status(400).json({ error: "Notiz fehlt." });
+  try {
+    const insertSql = `
+      INSERT INTO calentian_notes (note, calentian_event_entries_id, calentian_benutzer_id)
+      VALUES (?, ?, ?)
+    `;
+    const [result] = await dbPool.execute(insertSql, [note, entryId, userId]);
+    const [[row]] = await dbPool.execute(
+      "SELECT * FROM calentian_notes WHERE id = ?",
+      [result.insertId]
+    );
+    res.status(201).json(row);
+  } catch (err) {
+    console.error("❌ Fehler beim Anlegen der Notiz:", err);
+    res.status(500).json({ error: "Fehler beim Anlegen der Notiz" });
+  }
 });
 
-// PUT Notiz
-app.put('/notes-service/notes/:id', authenticateToken, (req, res) => {
+// PUT /notes-service/notes/:id
+app.put("/notes-service/notes/:id", authenticateToken, async (req, res) => {
   const noteId = req.params.id;
   const { note } = req.body;
-
-  if (!note) return res.status(400).json({ error: 'Notiz fehlt.' });
-
-  pool.query('SELECT * FROM calentian_notes WHERE id = ?', [noteId], (err, results) => {
-    if (err) return res.status(500).json({ error: err });
-    if (!results.length) return res.status(404).json({ error: 'Notiz nicht gefunden.' });
-
-    if (results[0].calentian_benutzer_id !== req.user.id)
-      return res.status(403).json({ error: 'Nicht berechtigt.' });
-
-    pool.query('UPDATE calentian_notes SET note = ? WHERE id = ?', [note, noteId], err2 => {
-      if (err2) return res.status(500).json({ error: err2 });
-
-      pool.query('SELECT * FROM calentian_notes WHERE id = ?', [noteId], (err3, rows) => {
-        if (err3) return res.status(500).json({ error: err3 });
-        res.json(rows[0]);
-      });
-    });
-  });
+  if (!note) return res.status(400).json({ error: "Notiz fehlt." });
+  try {
+    const [[existing]] = await dbPool.execute(
+      "SELECT * FROM calentian_notes WHERE id = ?",
+      [noteId]
+    );
+    if (!existing)
+      return res.status(404).json({ error: "Notiz nicht gefunden." });
+    if (existing.calentian_benutzer_id !== req.user.id)
+      return res.status(403).json({ error: "Nicht berechtigt." });
+    await dbPool.execute("UPDATE calentian_notes SET note = ? WHERE id = ?", [
+      note,
+      noteId,
+    ]);
+    const [[row]] = await dbPool.execute(
+      "SELECT * FROM calentian_notes WHERE id = ?",
+      [noteId]
+    );
+    res.json(row);
+  } catch (err) {
+    console.error("❌ Fehler beim Aktualisieren der Notiz:", err);
+    res.status(500).json({ error: "Fehler beim Aktualisieren der Notiz" });
+  }
 });
 
-// DELETE Notiz
-app.delete('/notes-service/notes/:id', authenticateToken, (req, res) => {
+// DELETE /notes-service/notes/:id
+app.delete("/notes-service/notes/:id", authenticateToken, async (req, res) => {
   const noteId = req.params.id;
-
-  pool.query('SELECT * FROM calentian_notes WHERE id = ?', [noteId], (err, results) => {
-    if (err) return res.status(500).json({ error: err });
-    if (!results.length) return res.status(404).json({ error: 'Notiz nicht gefunden.' });
-
-    if (results[0].calentian_benutzer_id !== req.user.id)
-      return res.status(403).json({ error: 'Nicht berechtigt.' });
-
-    pool.query('DELETE FROM calentian_notes WHERE id = ?', [noteId], err2 => {
-      if (err2) return res.status(500).json({ error: err2 });
-      res.json({ message: 'Notiz gelöscht.' });
-    });
-  });
+  try {
+    const [[existing]] = await dbPool.execute(
+      "SELECT * FROM calentian_notes WHERE id = ?",
+      [noteId]
+    );
+    if (!existing)
+      return res.status(404).json({ error: "Notiz nicht gefunden." });
+    if (existing.calentian_benutzer_id !== req.user.id)
+      return res.status(403).json({ error: "Nicht berechtigt." });
+    await dbPool.execute("DELETE FROM calentian_notes WHERE id = ?", [noteId]);
+    res.json({ message: "Notiz gelöscht." });
+  } catch (err) {
+    console.error("❌ Fehler beim Löschen der Notiz:", err);
+    res.status(500).json({ error: "Fehler beim Löschen der Notiz" });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Notes Service läuft auf Port ${PORT}`);
-});
+// 5) Bootstrap: Vault → DB → Server
+async function bootstrap() {
+  try {
+    await initVault();
+    await initDB();
+    const port = process.env.PORT || 6100;
+    app.listen(port, () => console.log(`🚀 Notes-Service auf Port ${port}`));
+  } catch (err) {
+    console.error("Startup-Error:", err);
+    process.exit(1);
+  }
+}
+
+bootstrap();

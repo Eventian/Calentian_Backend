@@ -1,10 +1,11 @@
 services:
   smtp-service:
     container_name: smtp-service
-    build: .
+    build:
+      context: ..
+      dockerfile: mail-service/Dockerfile
     env_file:
       - .env
-      - ../calentian.env
     networks:
       - proxy
     labels:

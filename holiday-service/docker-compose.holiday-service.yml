@@ -1,11 +1,12 @@
 services:
   holiday-server:
-    build: .
+    build:
+      context: ..
+      dockerfile: holiday-service/Dockerfile
     container_name: holiday-service
     restart: always
     env_file:
       - .env
-      - ../calentian.env
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.holiday-service.rule=Host(`api.calentian.de`) && PathPrefix(`/holiday-service`)"

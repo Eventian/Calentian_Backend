@@ -1,10 +1,12 @@
 services:
   mail-service:
     container_name: mail-service
-    build: .
+    build:
+      context: ..
+      dockerfile: mail-service/Dockerfile
     restart: unless-stopped
     env_file:
-      - ../calentian.env
+      - .env
 
     labels:
       - "traefik.enable=true"

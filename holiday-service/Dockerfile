@@ -1,12 +1,8 @@
-# Dockerfile
-FROM node:20-alpine
-
+FROM node:24-alpine
 WORKDIR /app
-
-COPY package*.json ./
+COPY holiday-service/package*.json ./
 RUN npm install
-
-COPY . .
-
+COPY holiday-service/. ./
+COPY vault-init.js ./vault-init.js
 EXPOSE 6600
-CMD ["node", "holiday-service.js"]
+CMD ["npm", "start"]

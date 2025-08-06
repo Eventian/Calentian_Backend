@@ -1,17 +1,18 @@
 {
-    "name": "event-api",
-    "version": "1.0.0",
-    "description": "Event API Service",
-    "main": "event-api-service.js",
-    "scripts": {
-      "start": "node event-api-service.js"
-    },
-    "dependencies": {
-      "express": "^4.18.2",
-      "mysql2": "^3.2.0",
-      "dotenv": "^16.0.3",
-      "cors": "^2.8.5",
-      "jsonwebtoken": "^9.0.0"
-    }
+  "name": "event-api",
+  "version": "1.0.0",
+  "description": "Event API Service",
+  "type": "module",
+  "main": "event-api-service.js",
+  "scripts": {
+    "start": "node event-api-service.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mysql2": "^3.2.0",
+    "dotenv": "^16.0.3",
+    "cors": "^2.8.5",
+    "jsonwebtoken": "^9.0.0",
+    "axios": "^1.6.8"
   }
-  
+}

@@ -1,17 +1,18 @@
 services:
   imap-service:
-    build: .
+    build:
+      context: ..
+      dockerfile: imap-service/Dockerfile
     container_name: imap-service
     restart: always
     env_file:
       - .env
-      - ../calentian.env
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.imap-service.rule=Host(`api.calentian.de`) && PathPrefix(`/imap-service`)"
       - "traefik.http.routers.imap-service.entrypoints=websecure"
       - "traefik.http.routers.imap-service.tls.certresolver=letsencrypt"
-      - "traefik.http.services.imap-service.loadbalancer.server.port=5200"  # Port für IMAP-Service
+      - "traefik.http.services.imap-service.loadbalancer.server.port=5200"
     networks:
       - proxy
 networks:

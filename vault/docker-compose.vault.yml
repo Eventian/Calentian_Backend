@@ -1,0 +1,28 @@
+services:
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: vault
+    restart: unless-stopped
+    volumes:
+      - vault_data:/vault/file
+      - ./vault-config:/vault/config
+    environment:
+      VAULT_ADDR: "https://vault.calentian.de"
+    command: vault server -config=/vault/config/config.hcl
+    cap_add:
+      - IPC_LOCK
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.vault.rule=Host(`vault.calentian.de`)"
+      - "traefik.http.routers.vault.entrypoints=websecure"
+      - "traefik.http.routers.vault.tls.certresolver=letsencrypt"
+      - "traefik.http.services.vault.loadbalancer.server.port=8200"
+    networks:
+      - proxy
+
+volumes:
+  vault_data:
+
+networks:
+  proxy:
+    external: true
