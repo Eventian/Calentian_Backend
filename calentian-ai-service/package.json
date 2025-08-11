@@ -1,0 +1,23 @@
+{
+  "name": "calentian-ai-service",
+  "version": "1.0.0",
+  "description": "Calentian AI Service - IMAP Analyse & LLM Clustering",
+  "type": "module",
+  "main": "calentian-ai-service.js",
+  "scripts": {
+    "start": "node calentian-ai-service.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "imapflow": "^1.0.152",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.11.0",
+    "uuid": "^9.0.1",
+    "mailparser": "^3.6.8",
+    "html-to-text": "^9.0.5"
+  }
+}

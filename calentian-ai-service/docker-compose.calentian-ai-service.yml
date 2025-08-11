@@ -1,0 +1,21 @@
+services:
+  calentian-ai-servvice:
+    build:
+      context: ..
+      dockerfile: calentian-ai-service/Dockerfile
+    container_name: calentian-ai-service
+    restart: always
+    env_file:
+      - .env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.calentian-ai-service.rule=Host(`api.calentian.de`) && PathPrefix(`/calentian-ai`)"
+      - "traefik.http.routers.calentian-ai-service.entrypoints=websecure"
+      - "traefik.http.routers.calentian-ai-service.tls.certresolver=letsencrypt"
+      - "traefik.http.services.calentian-ai-service.loadbalancer.server.port=7400"
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    external: true
